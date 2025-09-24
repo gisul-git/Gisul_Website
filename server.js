@@ -22,7 +22,7 @@ const Order = require('./Order');
 const Progress = require('./Progress');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 
 // Middleware
 app.use(cors({
@@ -601,7 +601,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .catch((err) => console.error('❌ Connection error:', err));
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
 });
 app.get('/protected', (req, res) => {
