@@ -127,6 +127,22 @@ app.post('/signup', async (req, res) => {
   }
 });
 
+app.use(session({
+  secret: cfg.jwtSecret,
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({ 
+    mongoUrl: cfg.mongodbUri,
+    touchAfter: 24 * 3600
+  }),
+  cookie: {
+    sameSite: cfg.session?.sameSite ?? 'None',
+    secure: cfg.session?.secure ?? true,
+    httpOnly: cfg.session?.httpOnly ?? true,
+    maxAge: cfg.session?.maxAgeMs ?? 24 * 60 * 60 * 1000
+  }
+}));
+
 // Login endpoint
 app.post('/login', async (req, res) => {
   try {
@@ -627,18 +643,6 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
   .then(() => {
     console.log('✅ Mongo connected');
     dbReady = true;
-    app.use(session({
-      secret: cfg.jwtSecret,
-      resave: false,
-      saveUninitialized: false,
-      store: MongoStore.create({ mongoUrl: cfg.mongodbUri }),
-      cookie: {
-        sameSite: cfg.session?.sameSite ?? 'None',
-        secure: cfg.session?.secure ?? true,
-        httpOnly: cfg.session?.httpOnly ?? true,
-        maxAge: cfg.session?.maxAgeMs ?? 24 * 60 * 60 * 1000
-      }
-    }));
   })
   .catch(err => {
     console.error('❌ Mongo connect failed (server still running):', err.message);
