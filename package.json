@@ -1,30 +1,37 @@
 {
-  "name": "signup",
+  "name": "signup-backend",
   "version": "1.0.0",
+  "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:dev": "cross-env APP_ENV=dev node server.js",
+    "start:qa": "cross-env APP_ENV=qa node server.js",
+    "start:uat": "cross-env APP_ENV=uat node server.js",
+    "start:prod": "cross-env APP_ENV=prod node server.js",
+    "health:local": "node scripts/health-check.js",
+    "env:print": "node scripts/print-env.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "@azure/storage-blob": "^12.28.0",
-    "axios": "^1.11.0",
-    "bcrypt": "^6.0.0",
-    "cloudinary": "^1.41.3",
+    "axios": "^1.7.4",
+    "bcrypt": "^5.1.1",
     "connect-mongo": "^5.1.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.0",
-    "express": "^5.1.0",
-    "express-session": "^1.18.1",
-    "google-auth-library": "^10.2.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "express-session": "^1.17.3",
+    "google-auth-library": "^9.14.2",
+    "helmet": "^7.1.0",
+    "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
-    "mongodb": "^6.17.0",
-    "mongoose": "^8.16.3",
-    "multer": "^2.0.2",
+    "mongoose": "^8.5.3",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
     "multer-azure-blob-storage": "^1.2.0",
-    "multer-storage-cloudinary": "^4.0.0"
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
   }
 }
