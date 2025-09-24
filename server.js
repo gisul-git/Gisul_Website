@@ -16,37 +16,58 @@ const MulterAzureStorage = require('multer-azure-blob-storage').MulterAzureStora
 const Counter = require('./Counter');
 const axios = require('axios');
 const { OAuth2Client } = require('google-auth-library');
+const helmet = require('helmet');
+const hpp = require('hpp');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+const { getConfig } = require('./config/env');
 
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
 const Progress = require('./Progress');
 
 const app = express();
+const cfg = getConfig();
 const PORT = process.env.PORT || 8080;
 
+// Fail-fast config validation helper
+function requireKeys(obj, keys, name = 'config') {
+  const missing = keys.filter(k => !obj || obj[k] === undefined || obj[k] === null || obj[k] === '');
+  if (missing.length) {
+    console.error(`Missing ${name} keys: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+}
+
+// minimally required to boot
+requireKeys(cfg, ['mongodbUri','jwtSecret'], 'root');
+
 // Middleware
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.use(helmet());
+app.use(hpp());
 app.use(cors({
-  origin: ['https://gisul.co.in', 'https://www.gisul.co.in'],
+  origin: (cfg.allowedOrigins || []).filter(Boolean),
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
 app.use(express.json());
+if (cfg.logLevel === 'debug') {
+  app.use(morgan('dev'));
+} else if (cfg.logLevel === 'info') {
+  app.use(morgan('tiny'));
+}
 
-// Session middleware
-app.set('trust proxy', 1); // Required for Azure App Service
+// Global rate limiter
+const limiter = rateLimit({
+  windowMs: cfg.rateLimit?.windowMs || 60 * 1000,
+  max: cfg.rateLimit?.maxRequestsPerWindow || 120,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(limiter);
 
-app.use(session({
-  secret: process.env.JWT_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI }),
-  cookie: {
-    sameSite: 'None', // Required for cross-origin cookies
-    secure: true,     // Required for HTTPS
-    httpOnly: true,   // Security enhancement
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
-}));
+// Session middleware will be mounted AFTER Mongo connects
 
 // Test route
 app.get('/', (req, res) => {
@@ -122,7 +143,7 @@ app.post('/login', async (req, res) => {
     // Create JWT token
     const token = jwt.sign(
       { userId: user._id, email: user.email, username: user.username },
-      process.env.JWT_SECRET,
+      cfg.jwtSecret,
       { expiresIn: '1h' }
     );
 
@@ -153,8 +174,8 @@ app.post('/logout', (req, res) => {
 // Google OAuth routes
 app.get('/auth/google', (req, res) => {
   const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
-    `redirect_uri=${encodeURIComponent(process.env.GOOGLE_REDIRECT_URI)}&` +
+    `client_id=${cfg.google?.clientId || ''}&` +
+    `redirect_uri=${encodeURIComponent(cfg.google?.redirectUri || '')}&` +
     `response_type=code&` +
     `scope=openid email profile&` +
     `access_type=offline&` +
@@ -173,25 +194,26 @@ app.get('/auth/google/callback', async (req, res) => {
 
 
     // Exchange code for token
-    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    const body = new URLSearchParams({
+      client_id: cfg.google?.clientId || '',
+      client_secret: cfg.google?.clientSecret || '',
       code: code,
       grant_type: 'authorization_code',
-      redirect_uri: process.env.GOOGLE_REDIRECT_URI
-    }, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
+      redirect_uri: cfg.google?.redirectUri || ''
     });
+    const tokenResponse = await axios.post(
+      'https://oauth2.googleapis.com/token',
+      body.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
     const { access_token, id_token } = tokenResponse.data;
 
     // Verify and decode the ID token
-    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+    const client = new OAuth2Client(cfg.google?.clientId || '');
     const ticket = await client.verifyIdToken({
       idToken: id_token,
-      audience: process.env.GOOGLE_CLIENT_ID
+      audience: cfg.google?.clientId || ''
     });
 
     const payload = ticket.getPayload();
@@ -228,7 +250,7 @@ app.get('/auth/google/callback', async (req, res) => {
     // Create JWT token
     const token = jwt.sign(
       { userId: user._id, email: user.email, username: user.username },
-      process.env.JWT_SECRET,
+      cfg.jwtSecret,
       { expiresIn: '1h' }
     );
 
@@ -238,11 +260,13 @@ app.get('/auth/google/callback', async (req, res) => {
     req.session.email = user.email;
 
     // Redirect to frontend with token
-    res.redirect(`https://gisul.co.in/courses?token=${token}`);
+    const base = cfg.frontendBaseUrl || 'https://gisul.co.in';
+    res.redirect(`${base}/courses?token=${token}`);
 
   } catch (error) {
     console.error('Google OAuth callback error:', error);
-    res.redirect('https://gisul.co.in/login-error?message=Authentication failed');
+    const base = cfg.frontendBaseUrl || 'https://gisul.co.in';
+    res.redirect(`${base}/login-error?message=Authentication failed`);
   }
 });
 
@@ -318,28 +342,26 @@ app.put('/profile', async (req, res) => {
 });
 
 // Set up storage for uploaded images (Azure compatible)
-const storage = multer.memoryStorage(); // Use memory storage for Azure
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
 // Note: Local file storage removed for Azure compatibility
 // All file uploads should use Azure Blob Storage
 
-// Azure Blob Storage for profile pictures
-const profilePicStorage = new MulterAzureStorage({
-  connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-  accessKey: '', // Not needed if using connection string
-  accountName: '', // Not needed if using connection string
-  containerName: process.env.AZURE_STORAGE_PROFILE_CONTAINER_NAME || 'profile-pictures',
-  blobName: (req, file) => {
-    // Unique filename for profile pictures
-    return req.session.userId + '_profile_' + Date.now() + '.' + file.originalname.split('.').pop();
-  },
-  contentSettings: {
-    contentType: (req, file) => file.mimetype
-  }
-});
+// Azure Blob Storage lazy factory
+function makeAzureStorage(containerName) {
+  requireKeys(cfg.azure, ['storageConnectionString'], 'azure');
+  return new MulterAzureStorage({
+    connectionString: cfg.azure.storageConnectionString,
+    containerName,
+    blobName: (_req, file) => Date.now() + '-' + file.originalname,
+    contentSettings: { contentType: (_req, file) => file.mimetype }
+  });
+}
 
-const uploadProfilePic = multer({ storage: profilePicStorage });
+const uploadProfilePic = multer({
+  storage: makeAzureStorage(cfg.azure?.profileContainer || 'profile-pictures')
+});
 
 app.post('/profile/picture', uploadProfilePic.single('profilePic'), async (req, res) => {
   if (!req.session.userId) {
@@ -457,22 +479,9 @@ app.post('/wishlist/remove', async (req, res) => {
   res.json({ message: 'Item removed', wishlist: wishlist.items });
 });
 
-// Azure Blob Storage config
-const azureStorage = new MulterAzureStorage({
-  connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-  accessKey: '', // Not needed if using connection string
-  accountName: '', // Not needed if using connection string
-  containerName: process.env.AZURE_STORAGE_CONTAINER_NAME,
-  blobName: (req, file) => {
-    // Unique filename
-    return Date.now() + '-' + file.originalname;
-  },
-  contentSettings: {
-    contentType: (req, file) => file.mimetype
-  }
+const uploadAzure = multer({
+  storage: makeAzureStorage(cfg.azure?.resumeContainer || 'resumes')
 });
-
-const uploadAzure = multer({ storage: azureStorage });
 
 // Job application endpoint
 app.post('/apply-trainer', uploadAzure.single('resume'), async (req, res) => {
@@ -500,20 +509,9 @@ app.post('/apply-trainer', uploadAzure.single('resume'), async (req, res) => {
   }
 });
 
-// Azure Blob Storage for course images
-const courseImageStorage = new MulterAzureStorage({
-  connectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
-  containerName: process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME || 'course-images',
-  blobName: (req, file) => {
-    // Unique filename for course images
-    return 'course_' + Date.now() + '_' + Math.round(Math.random() * 1E9) + '.' + file.originalname.split('.').pop();
-  },
-  contentSettings: {
-    contentType: (req, file) => file.mimetype
-  }
+const uploadCourseImage = multer({
+  storage: makeAzureStorage(cfg.azure?.courseContainer || 'course-images')
 });
-
-const uploadCourseImage = multer({ storage: courseImageStorage });
 
 // Upload course image
 app.post('/course/image', uploadCourseImage.single('courseImage'), async (req, res) => {
@@ -595,14 +593,37 @@ app.get('/orders', async (req, res) => {
   res.json({ orders });
 });
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ Connected to MongoDB Atlas'))
-  .catch((err) => console.error('❌ Connection error:', err));
+// Connect to MongoDB then start server and mount session
+mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
+  .then(() => {
+    console.log('✅ Mongo connected');
+    app.set('trust proxy', 1);
+    app.use(session({
+      secret: cfg.jwtSecret,
+      resave: false,
+      saveUninitialized: false,
+      store: MongoStore.create({ mongoUrl: cfg.mongodbUri }),
+      cookie: {
+        sameSite: cfg.session?.sameSite ?? 'None',
+        secure: cfg.session?.secure ?? true,
+        httpOnly: cfg.session?.httpOnly ?? true,
+        maxAge: cfg.session?.maxAgeMs ?? 24 * 60 * 60 * 1000
+      }
+    }));
+    app.listen(PORT, '0.0.0.0', () => console.log(`HTTP listening on ${PORT}`));
+  })
+  .catch(err => {
+    console.error('❌ Mongo connect failed:', err.message);
+    process.exit(1);
+  });
 
-// Start server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on port ${PORT}`);
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection', reason);
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException', err);
+  process.exit(1);
 });
 app.get('/protected', (req, res) => {
   if (!req.session.userId) {
