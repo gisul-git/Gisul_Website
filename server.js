@@ -9,7 +9,6 @@ const bcrypt = require('bcrypt');
 const User = require('./User');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const path = require('path');
 const Cart = require('./Cart');
 const Wishlist = require('./Wishlist');
 const MulterAzureStorage = require('multer-azure-blob-storage').MulterAzureStorage;
@@ -27,8 +26,10 @@ const Order = require('./Order');
 const Progress = require('./Progress');
 
 const app = express();
+app.set('trust proxy', 1);
 const cfg = getConfig();
 const PORT = process.env.PORT || 8080;
+let dbReady = false;
 
 // Fail-fast config validation helper
 function requireKeys(obj, keys, name = 'config') {
@@ -44,6 +45,7 @@ requireKeys(cfg, ['mongodbUri','jwtSecret'], 'root');
 
 // Middleware
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.get('/readyz', (_req, res) => res.status(dbReady ? 200 : 503).json({ dbReady }));
 app.use(helmet());
 app.use(hpp());
 app.use(cors({
@@ -66,6 +68,21 @@ const limiter = rateLimit({
   legacyHeaders: false
 });
 app.use(limiter);
+
+// Guard DB/session dependent routes during warmup
+const requireDbReady = (req, res, next) => {
+  if (!dbReady) return res.status(503).json({ message: 'Service warming up, try again in a moment.' });
+  next();
+};
+app.use([
+  '/login','/logout','/profile','/profile/picture',
+  '/cart','/cart/add','/cart/update-quantity','/cart/remove',
+  '/wishlist','/wishlist/add','/wishlist/remove',
+  '/apply-trainer','/course/image',
+  '/payment/success','/orders','/progress','/protected',
+  '/auth/google','/auth/google/callback',
+  '/signup'
+], requireDbReady);
 
 // Session middleware will be mounted AFTER Mongo connects
 
@@ -166,7 +183,7 @@ app.post('/logout', (req, res) => {
       console.error('Logout error:', err);
       return res.status(500).json({ message: 'Logout failed.' });
     }
-    res.clearCookie('connect.sid'); // Default session cookie name
+    res.clearCookie('connect.sid', { sameSite: 'None', secure: true, httpOnly: true });
     res.json({ message: 'Logged out successfully.' });
   });
 });
@@ -341,16 +358,16 @@ app.put('/profile', async (req, res) => {
   }
 });
 
-// Set up storage for uploaded images (Azure compatible)
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+// Removed local memory upload wiring; using Azure storage factories per route
 
 // Note: Local file storage removed for Azure compatibility
 // All file uploads should use Azure Blob Storage
 
 // Azure Blob Storage lazy factory
 function makeAzureStorage(containerName) {
-  requireKeys(cfg.azure, ['storageConnectionString'], 'azure');
+  if (!cfg.azure?.storageConnectionString) {
+    throw new Error('Azure Storage not configured');
+  }
   return new MulterAzureStorage({
     connectionString: cfg.azure.storageConnectionString,
     containerName,
@@ -358,19 +375,20 @@ function makeAzureStorage(containerName) {
     contentSettings: { contentType: (_req, file) => file.mimetype }
   });
 }
+const makeUpload = (container) => multer({ storage: makeAzureStorage(container) });
 
-const uploadProfilePic = multer({
-  storage: makeAzureStorage(cfg.azure?.profileContainer || 'profile-pictures')
-});
-
-app.post('/profile/picture', uploadProfilePic.single('profilePic'), async (req, res) => {
-  if (!req.session.userId) {
-    return res.status(401).json({ message: 'Not authenticated' });
+app.post('/profile/picture', (req, res, next) => {
+  try {
+    const uploadProfilePic = makeUpload(cfg.azure?.profileContainer || 'profile-pictures').single('profilePic');
+    uploadProfilePic(req, res, next);
+  } catch (e) {
+    console.error(e.message);
+    return res.status(503).json({ message: 'File storage not configured' });
   }
-  if (!req.file) {
-    return res.status(400).json({ message: 'No file uploaded' });
-  }
-  const imageUrl = req.file.url; // Azure Blob Storage URL
+}, async (req, res) => {
+  if (!req.session?.userId) return res.status(401).json({ message: 'Not authenticated' });
+  if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+  const imageUrl = req.file.url;
   await User.findByIdAndUpdate(req.session.userId, { profilePic: imageUrl });
   res.json({ message: 'Profile picture updated', profilePic: imageUrl });
 });
@@ -479,12 +497,16 @@ app.post('/wishlist/remove', async (req, res) => {
   res.json({ message: 'Item removed', wishlist: wishlist.items });
 });
 
-const uploadAzure = multer({
-  storage: makeAzureStorage(cfg.azure?.resumeContainer || 'resumes')
-});
-
 // Job application endpoint
-app.post('/apply-trainer', uploadAzure.single('resume'), async (req, res) => {
+app.post('/apply-trainer', (req, res, next) => {
+  try {
+    const uploadAzure = makeUpload(cfg.azure?.resumeContainer || 'resumes').single('resume');
+    uploadAzure(req, res, next);
+  } catch (e) {
+    console.error(e.message);
+    return res.status(503).json({ message: 'File storage not configured' });
+  }
+}, async (req, res) => {
   try {
     const { name, email, phone, trainingCourses, trainingExperience, linkedinProfile } = req.body;
     if (!name || !email || !phone || !trainingCourses || !trainingExperience) {
@@ -509,12 +531,16 @@ app.post('/apply-trainer', uploadAzure.single('resume'), async (req, res) => {
   }
 });
 
-const uploadCourseImage = multer({
-  storage: makeAzureStorage(cfg.azure?.courseContainer || 'course-images')
-});
-
 // Upload course image
-app.post('/course/image', uploadCourseImage.single('courseImage'), async (req, res) => {
+app.post('/course/image', (req, res, next) => {
+  try {
+    const uploadCourseImage = makeUpload(cfg.azure?.courseContainer || 'course-images').single('courseImage');
+    uploadCourseImage(req, res, next);
+  } catch (e) {
+    console.error(e.message);
+    return res.status(503).json({ message: 'File storage not configured' });
+  }
+}, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No image uploaded' });
@@ -593,11 +619,14 @@ app.get('/orders', async (req, res) => {
   res.json({ orders });
 });
 
-// Connect to MongoDB then start server and mount session
+// Start HTTP immediately for Azure warmup
+app.listen(PORT, '0.0.0.0', () => console.log(`HTTP listening on ${PORT}`));
+
+// Connect to MongoDB after server start; do not exit on failure
 mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
   .then(() => {
     console.log('✅ Mongo connected');
-    app.set('trust proxy', 1);
+    dbReady = true;
     app.use(session({
       secret: cfg.jwtSecret,
       resave: false,
@@ -610,20 +639,18 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
         maxAge: cfg.session?.maxAgeMs ?? 24 * 60 * 60 * 1000
       }
     }));
-    app.listen(PORT, '0.0.0.0', () => console.log(`HTTP listening on ${PORT}`));
   })
   .catch(err => {
-    console.error('❌ Mongo connect failed:', err.message);
-    process.exit(1);
+    console.error('❌ Mongo connect failed (server still running):', err.message);
   });
 
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason);
-  process.exit(1);
+  // keep process alive for warmup; consider restart policy outside
 });
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException', err);
-  process.exit(1);
+  // keep process alive for warmup; consider restart policy outside
 });
 app.get('/protected', (req, res) => {
   if (!req.session.userId) {
