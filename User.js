@@ -14,6 +14,11 @@ const userSchema = new mongoose.Schema({
   language: { type: String, default: 'English' },
   timezone: { type: String, default: 'UTC' },
   profilePic: { type: String, default: '' },
+  // Email verification
+  isEmailVerified: { type: Boolean, default: false },
+  emailVerificationToken: { type: String, index: { unique: false, sparse: true } },
+  emailVerificationExpires: { type: Date },
+  emailVerifiedAt: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
 

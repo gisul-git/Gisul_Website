@@ -35,6 +35,12 @@ const ENV_CONFIG = {
       resumeContainer: process.env.AZURE_STORAGE_CONTAINER_NAME_DEV || process.env.AZURE_STORAGE_CONTAINER_NAME,
       courseContainer: process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME_DEV || process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME
     },
+    aws: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID_DEV || process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_DEV || process.env.AWS_SECRET_ACCESS_KEY,
+      sesRegion: process.env.AWS_SES_REGION_DEV || process.env.AWS_SES_REGION,
+      sesFromEmail: process.env.AWS_SES_FROM_EMAIL_DEV || process.env.AWS_SES_FROM_EMAIL
+    },
     logLevel: process.env.LOG_LEVEL_DEV
   },
   qa: {
@@ -55,6 +61,12 @@ const ENV_CONFIG = {
       profileContainer: process.env.AZURE_STORAGE_PROFILE_CONTAINER_NAME_QA || process.env.AZURE_STORAGE_PROFILE_CONTAINER_NAME,
       resumeContainer: process.env.AZURE_STORAGE_CONTAINER_NAME_QA || process.env.AZURE_STORAGE_CONTAINER_NAME,
       courseContainer: process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME_QA || process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME
+    },
+    aws: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID_QA || process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_QA || process.env.AWS_SECRET_ACCESS_KEY,
+      sesRegion: process.env.AWS_SES_REGION_QA || process.env.AWS_SES_REGION,
+      sesFromEmail: process.env.AWS_SES_FROM_EMAIL_QA || process.env.AWS_SES_FROM_EMAIL
     },
     logLevel: process.env.LOG_LEVEL_QA
   },
@@ -77,6 +89,12 @@ const ENV_CONFIG = {
       resumeContainer: process.env.AZURE_STORAGE_CONTAINER_NAME_UAT || process.env.AZURE_STORAGE_CONTAINER_NAME,
       courseContainer: process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME_UAT || process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME
     },
+    aws: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID_UAT || process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_UAT || process.env.AWS_SECRET_ACCESS_KEY,
+      sesRegion: process.env.AWS_SES_REGION_UAT || process.env.AWS_SES_REGION,
+      sesFromEmail: process.env.AWS_SES_FROM_EMAIL_UAT || process.env.AWS_SES_FROM_EMAIL
+    },
     logLevel: process.env.LOG_LEVEL_UAT || 'info'
   },
   prod: {
@@ -98,6 +116,12 @@ const ENV_CONFIG = {
       profileContainer: process.env.AZURE_STORAGE_PROFILE_CONTAINER_NAME,
       resumeContainer: process.env.AZURE_STORAGE_CONTAINER_NAME,
       courseContainer: process.env.AZURE_STORAGE_COURSE_CONTAINER_NAME
+    },
+    aws: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      sesRegion: process.env.AWS_SES_REGION,
+      sesFromEmail: process.env.AWS_SES_FROM_EMAIL
     },
     logLevel: process.env.LOG_LEVEL
   }

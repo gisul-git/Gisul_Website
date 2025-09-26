@@ -20,6 +20,8 @@ const hpp = require('hpp');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { getConfig } = require('./config/env');
+const crypto = require('crypto');
+const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
@@ -30,6 +32,45 @@ app.set('trust proxy', 1);
 const cfg = getConfig();
 const PORT = process.env.PORT || 8080;
 let dbReady = false;
+// AWS SES client (lazy init per config)
+let sesClient = null;
+function getSesClient() {
+  if (!sesClient) {
+    if (!cfg.aws?.accessKeyId || !cfg.aws?.secretAccessKey || !cfg.aws?.sesRegion || !cfg.aws?.sesFromEmail) {
+      console.warn('AWS SES not fully configured');
+      return null;
+    }
+    sesClient = new SESClient({
+      region: cfg.aws.sesRegion,
+      credentials: {
+        accessKeyId: cfg.aws.accessKeyId,
+        secretAccessKey: cfg.aws.secretAccessKey
+      }
+    });
+  }
+  return sesClient;
+}
+
+async function sendVerificationEmail(toEmail, token) {
+  const client = getSesClient();
+  if (!client) throw new Error('Email service not configured');
+  const verifyUrl = `${cfg.frontendBaseUrl}/verify-email?token=${token}`;
+  const params = {
+    Source: cfg.aws.sesFromEmail,
+    Destination: { ToAddresses: [toEmail] },
+    Message: {
+      Subject: { Data: 'Verify your email' },
+      Body: {
+        Text: { Data: `Welcome to Gisul!\n\nPlease verify your email by clicking the link below within 24 hours:\n\n${verifyUrl}\n\nIf you did not sign up, you can ignore this email.` }
+      }
+    }
+  };
+  await client.send(new SendEmailCommand(params));
+}
+
+function generateVerificationToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
 
 // Fail-fast config validation helper
 function requireKeys(obj, keys, name = 'config') {
@@ -96,6 +137,12 @@ app.post('/signup', async (req, res) => {
   try {
     const { email, username, phone, password } = req.body;
 
+    // Only allow Gmail emails
+    const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+    if (!gmailRegex.test(email || '')) {
+      return res.status(400).json({ message: 'Only Gmail addresses are allowed.' });
+    }
+
     // Basic validation for manual signup
     if (!email || !username || !phone || !password) {
       return res.status(400).json({ message: 'All fields are required.' });
@@ -104,23 +151,50 @@ app.post('/signup', async (req, res) => {
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });
     if (existingUser) {
+      if (!existingUser.isEmailVerified) {
+        // resend verification
+        try {
+          const token = generateVerificationToken();
+          existingUser.emailVerificationToken = token;
+          existingUser.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          await existingUser.save();
+          await sendVerificationEmail(existingUser.email, token);
+        } catch (e) {
+          console.error('Resend verification on signup failed:', e);
+        }
+        return res.status(409).json({ message: 'Account exists but not verified. Verification email resent if possible.' });
+      }
       return res.status(409).json({ message: 'Email or username already in use.' });
     }
 
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user
+    // Create new unverified user
+    const token = generateVerificationToken();
+    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const newUser = new User({
       email,
       username,
       phone,
       password: hashedPassword,
+      isEmailVerified: false,
+      emailVerificationToken: token,
+      emailVerificationExpires: expires
     });
 
     await newUser.save();
 
-    res.status(201).json({ message: 'User registered successfully!' });
+    try {
+      await sendVerificationEmail(email, token);
+    } catch (emailErr) {
+      // Cleanup user if email sending fails
+      await User.deleteOne({ _id: newUser._id });
+      console.error('Verification email send failed:', emailErr);
+      return res.status(502).json({ message: 'Failed to send verification email. Please try again later.' });
+    }
+
+    res.status(201).json({ message: 'User registered. Check your email to verify your account.' });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ message: 'Server error. Please try again later.' });
@@ -173,9 +247,13 @@ app.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials.' });
     }
 
+    if (!user.isEmailVerified) {
+      return res.status(403).json({ message: 'Email not verified. Please verify your email.' });
+    }
+
     // Create JWT token
     const token = jwt.sign(
-      { userId: user._id, email: user.email, username: user.username },
+      { userId: user._id, email: user.email, username: user.username, isEmailVerified: user.isEmailVerified },
       cfg.jwtSecret,
       { expiresIn: '1h' }
     );
@@ -184,6 +262,7 @@ app.post('/login', async (req, res) => {
     req.session.userId = user._id;
     req.session.username = user.username;
     req.session.email = user.email;
+    req.session.isEmailVerified = user.isEmailVerified;
 
     res.status(200).json({ message: 'Login successful!', token, session: req.session });
   } catch (err) {
@@ -191,6 +270,57 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 });
+
+// Email verification endpoints
+app.get('/verify-email/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token) return res.status(400).json({ message: 'Missing token' });
+    const user = await User.findOne({ emailVerificationToken: token });
+    if (!user) return res.status(400).json({ message: 'Invalid verification token' });
+    if (!user.emailVerificationExpires || user.emailVerificationExpires < new Date()) {
+      return res.status(400).json({ message: 'Verification token expired' });
+    }
+    user.isEmailVerified = true;
+    user.emailVerifiedAt = new Date();
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+    const base = cfg.frontendBaseUrl || 'https://gisul.co.in';
+    return res.redirect(`${base}/verification-success`);
+  } catch (err) {
+    console.error('Verify email error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.isEmailVerified) return res.status(400).json({ message: 'Email already verified' });
+
+    const token = generateVerificationToken();
+    user.emailVerificationToken = token;
+    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
+    await sendVerificationEmail(email, token);
+    return res.json({ message: 'Verification email resent' });
+  } catch (err) {
+    console.error('Resend verification error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Middleware to require verified email for protected operations
+function requireEmailVerification(req, res, next) {
+  if (!req.session?.isEmailVerified) {
+    return res.status(403).json({ message: 'Email verification required' });
+  }
+  next();
+}
 
 // Logout endpoint
 app.post('/logout', (req, res) => {
@@ -323,7 +453,8 @@ app.get('/profile', async (req, res) => {
       country: user.country,
       language: user.language,
       timezone: user.timezone,
-      profilePic: user.profilePic || ''
+      profilePic: user.profilePic || '',
+      isEmailVerified: !!user.isEmailVerified
     });
   } catch (err) {
     console.error('Profile read error:', err);
@@ -410,7 +541,7 @@ app.post('/profile/picture', (req, res, next) => {
 });
 
 // Add to cart
-app.post('/cart/add', async (req, res) => {
+app.post('/cart/add', requireEmailVerification, async (req, res) => {
   if (!req.session.userId) return res.status(401).json({ message: 'Not authenticated' });
   const { courseId, title, price, duration, imageUrl } = req.body; // Add imageUrl
   if (!courseId) return res.status(400).json({ message: 'Missing courseId' });
@@ -607,7 +738,7 @@ app.post('/course/image', (req, res, next) => {
 });
 
 // Payment success endpoint
-app.post('/payment/success', async (req, res) => {
+app.post('/payment/success', requireEmailVerification, async (req, res) => {
   try {
     const { userId, courses, totalAmount, status, paymentDate } = req.body;
     if (!userId || !courses || !totalAmount || !status || !paymentDate) {
