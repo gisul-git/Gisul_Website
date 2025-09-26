@@ -513,39 +513,76 @@ app.post('/wishlist/remove', async (req, res) => {
   res.json({ message: 'Item removed', wishlist: wishlist.items });
 });
 
-// Job application endpoint
-app.post('/apply-trainer', (req, res, next) => {
-  try {
-    const uploadAzure = makeUpload(cfg.azure?.resumeContainer || 'resumes').single('resume');
-    uploadAzure(req, res, next);
-  } catch (e) {
-    console.error(e.message);
-    return res.status(503).json({ message: 'File storage not configured' });
+// ---- Upload constraints for resumes: PDF only, max 5MB ----
+const pdfOnly = (req, file, cb) => {
+  if (file.mimetype === 'application/pdf') return cb(null, true);
+  const e = new Error('Only PDF resumes are allowed');
+  e.status = 400;
+  cb(e);
+};
+
+function makeAzureStorageForResumes(containerName) {
+  if (!cfg.azure?.storageConnectionString) {
+    const e = new Error('Azure Storage not configured');
+    e.status = 503;
+    throw e;
   }
-}, async (req, res) => {
-  try {
-    const { name, email, phone, trainingCourses, trainingExperience, linkedinProfile } = req.body;
-    if (!name || !email || !phone || !trainingCourses || !trainingExperience) {
-      return res.status(400).json({ message: 'All required fields must be filled.' });
-    }
-    // Azure Blob Storage URL
-    const resumeUrl = req.file ? req.file.url : '';
-    const application = new TrainerApplication({
-      name,
-      email,
-      phone,
-      trainingCourses,
-      trainingExperience,
-      linkedinProfile,
-      resumeUrl
-    });
-    await application.save();
-    res.status(201).json({ message: 'Application submitted successfully!' });
-  } catch (err) {
-    console.error('Application error:', err);
-    res.status(500).json({ message: 'Server error. Please try again later.' });
-  }
+  return new MulterAzureStorage({
+    connectionString: cfg.azure.storageConnectionString,
+    containerName,
+    blobName: (_req, file) => Date.now() + '-' + file.originalname,
+    contentSettings: { contentType: (_req, file) => file.mimetype }
+  });
+}
+
+const makeResumeUpload = (container) => multer({
+  storage: makeAzureStorageForResumes(container),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: pdfOnly
 });
+
+// Job application endpoint (PDF only, 5MB)
+app.post(
+  '/apply-trainer',
+  (req, res, next) => {
+    try {
+      const uploadAzure = makeResumeUpload(cfg.azure?.resumeContainer || 'resumes').single('resume'); // field name: 'resume'
+      uploadAzure(req, res, next);
+    } catch (e) {
+      return next(e);
+    }
+  },
+  async (req, res, next) => {
+    try {
+      const { name, email, phone, trainingCourses, trainingExperience, linkedinProfile } = req.body;
+
+      if (!name || !email || !phone || !trainingCourses || !trainingExperience) {
+        return res.status(400).json({ message: 'All required fields must be filled.' });
+      }
+      if (!req.file) {
+        return res.status(400).json({ message: 'Resume file missing' });
+      }
+      if (!req.file.url) {
+        return res.status(400).json({ message: 'Resume upload failed' });
+      }
+
+      const application = new TrainerApplication({
+        name,
+        email,
+        phone,
+        trainingCourses,
+        trainingExperience,
+        linkedinProfile,
+        resumeUrl: req.file.url
+      });
+
+      await application.save();
+      return res.status(201).json({ message: 'Application submitted successfully!' });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
 
 // Upload course image
 app.post('/course/image', (req, res, next) => {
@@ -635,6 +672,28 @@ app.get('/orders', async (req, res) => {
   res.json({ orders });
 });
 
+// Move protected route above global error handler/listen to ensure handler catches errors
+app.get('/protected', (req, res) => {
+  if (!req.session.userId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  res.json({ message: 'You are authenticated!', user: req.session });
+});
+
+// JSON-only error handler (prevents HTML error pages)
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err);
+  const status =
+    (Number.isInteger(err?.status) && err.status) ||
+    (Number.isInteger(err?.code) && err.code) ||
+    500;
+  const message =
+    (typeof err === 'string' && err) ||
+    err?.message ||
+    'Internal Server Error';
+  res.status(status).type('application/json').json({ error: true, message });
+});
+
 // Start HTTP immediately for Azure warmup
 app.listen(PORT, '0.0.0.0', () => console.log(`HTTP listening on ${PORT}`));
 
@@ -655,10 +714,4 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException', err);
   // keep process alive for warmup; consider restart policy outside
-});
-app.get('/protected', (req, res) => {
-  if (!req.session.userId) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
-  res.json({ message: 'You are authenticated!', user: req.session });
 });
