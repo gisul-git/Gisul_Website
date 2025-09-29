@@ -26,6 +26,8 @@ const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
 const Progress = require('./Progress');
+const ContactForm = require('./ContactForm');
+const Newsletter = require('./Newsletter');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -809,6 +811,304 @@ app.get('/protected', (req, res) => {
     return res.status(401).json({ message: 'Unauthorized' });
   }
   res.json({ message: 'You are authenticated!', user: req.session });
+});
+
+// ===== CONTACT FORM & NEWSLETTER ENDPOINTS =====
+
+// Rate limiters for contact form and newsletter
+const contactFormLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 3, // 3 requests per 15 minutes per IP
+  message: { success: false, message: 'Too many contact form submissions. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const newsletterLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // 5 requests per hour per IP
+  message: { success: false, message: 'Too many newsletter requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Email validation helpers
+const isValidEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
+const isGmailEmail = (email) => {
+  const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+  return gmailRegex.test(email);
+};
+
+// POST /contact - Contact form submission
+app.post('/contact', contactFormLimiter, async (req, res) => {
+  try {
+    const { name, email, comment } = req.body;
+
+    // Validation
+    if (!name || !email || !comment) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Name, email, and comment are required.' 
+      });
+    }
+
+    // Email format validation
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please provide a valid email address.' 
+      });
+    }
+
+    // Name length validation
+    if (name.trim().length < 2 || name.trim().length > 100) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Name must be between 2 and 100 characters.' 
+      });
+    }
+
+    // Comment length validation
+    if (comment.trim().length < 10 || comment.trim().length > 1000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Comment must be between 10 and 1000 characters.' 
+      });
+    }
+
+    // Create contact form entry
+    const contactForm = new ContactForm({
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      comment: comment.trim()
+    });
+
+    await contactForm.save();
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Thank you for your message! We will get back to you soon.' 
+    });
+
+  } catch (err) {
+    console.error('Contact form error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error. Please try again later.' 
+    });
+  }
+});
+
+// POST /newsletter/subscribe - Newsletter subscription
+app.post('/newsletter/subscribe', newsletterLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validation
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required.' 
+      });
+    }
+
+    // Gmail-only validation
+    if (!isGmailEmail(email)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Only Gmail addresses are allowed for newsletter subscription.' 
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Check for existing subscription
+    const existingSubscription = await Newsletter.findOne({ email: normalizedEmail });
+
+    if (existingSubscription) {
+      if (existingSubscription.isActive) {
+        return res.status(409).json({ 
+          success: false, 
+          message: 'This email is already subscribed to our newsletter.' 
+        });
+      } else {
+        // Reactivate existing subscription
+        existingSubscription.isActive = true;
+        existingSubscription.subscribedAt = new Date();
+        await existingSubscription.save();
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Welcome back! Your newsletter subscription has been reactivated.' 
+        });
+      }
+    }
+
+    // Create new subscription
+    const newsletter = new Newsletter({
+      email: normalizedEmail
+    });
+
+    await newsletter.save();
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Successfully subscribed to our newsletter! Thank you for joining us.' 
+    });
+
+  } catch (err) {
+    console.error('Newsletter subscription error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error. Please try again later.' 
+    });
+  }
+});
+
+// POST /newsletter/unsubscribe - Newsletter unsubscription
+app.post('/newsletter/unsubscribe', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validation
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required.' 
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Find and deactivate subscription
+    const subscription = await Newsletter.findOne({ email: normalizedEmail });
+
+    if (!subscription) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Email not found in our newsletter list.' 
+      });
+    }
+
+    if (!subscription.isActive) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'This email is already unsubscribed.' 
+      });
+    }
+
+    // Soft delete (set isActive to false)
+    subscription.isActive = false;
+    await subscription.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Successfully unsubscribed from our newsletter. We\'re sorry to see you go!' 
+    });
+
+  } catch (err) {
+    console.error('Newsletter unsubscription error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error. Please try again later.' 
+    });
+  }
+});
+
+// GET /admin/contact-forms - Admin endpoint for contact form submissions
+app.get('/admin/contact-forms', async (req, res) => {
+  try {
+    const { status, page = 1, limit = 10 } = req.query;
+    
+    // Build query
+    const query = {};
+    if (status && ['new', 'read', 'responded'].includes(status)) {
+      query.status = status;
+    }
+
+    // Pagination
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit))); // Max 50 per page
+    const skip = (pageNum - 1) * limitNum;
+
+    // Get total count
+    const total = await ContactForm.countDocuments(query);
+
+    // Get paginated results
+    const contactForms = await ContactForm.find(query)
+      .sort({ submittedAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .select('-__v');
+
+    res.status(200).json({
+      success: true,
+      data: contactForms,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (err) {
+    console.error('Admin contact forms error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error. Please try again later.' 
+    });
+  }
+});
+
+// GET /admin/newsletter-subscribers - Admin endpoint for newsletter subscribers
+app.get('/admin/newsletter-subscribers', async (req, res) => {
+  try {
+    const { isActive, page = 1, limit = 10 } = req.query;
+    
+    // Build query
+    const query = {};
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+    }
+
+    // Pagination
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit))); // Max 50 per page
+    const skip = (pageNum - 1) * limitNum;
+
+    // Get total count
+    const total = await Newsletter.countDocuments(query);
+
+    // Get paginated results
+    const subscribers = await Newsletter.find(query)
+      .sort({ subscribedAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .select('-__v');
+
+    res.status(200).json({
+      success: true,
+      data: subscribers,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (err) {
+    console.error('Admin newsletter subscribers error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error. Please try again later.' 
+    });
+  }
 });
 
 // JSON-only error handler (prevents HTML error pages)
