@@ -28,6 +28,10 @@ const Order = require('./Order');
 const Progress = require('./Progress');
 const ContactForm = require('./ContactForm');
 const Newsletter = require('./Newsletter');
+const BrochureRequest = require('./BrochureRequest');
+const VoucherRequest = require('./VoucherRequest');
+const ContactForm = require('./ContactForm');
+const Newsletter = require('./Newsletter');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -813,7 +817,7 @@ app.get('/protected', (req, res) => {
   res.json({ message: 'You are authenticated!', user: req.session });
 });
 
-// ===== CONTACT FORM & NEWSLETTER ENDPOINTS =====
+// ===== CONTACT FORM, NEWSLETTER, BROCHURE & VOUCHER ENDPOINTS =====
 
 // Rate limiters for contact form and newsletter
 const contactFormLimiter = rateLimit({
@@ -832,6 +836,15 @@ const newsletterLimiter = rateLimit({
   legacyHeaders: false
 });
 
+// Brochure & Voucher: rate limit 3 per 15 minutes
+const formLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // Email validation helpers
 const isValidEmail = (email) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -841,6 +854,13 @@ const isValidEmail = (email) => {
 const isGmailEmail = (email) => {
   const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
   return gmailRegex.test(email);
+};
+
+// Simple phone number validation: allows +, digits, spaces, hyphens, parentheses, 7-20 chars
+const isValidPhone = (phone) => {
+  const phoneRegex = /^[+]?[(]?[0-9]{1,4}[)]?[0-9\s\-]{5,}$/;
+  const normalized = String(phone || '').trim();
+  return normalized.length >= 7 && normalized.length <= 20 && phoneRegex.test(normalized);
 };
 
 // POST /contact - Contact form submission
@@ -1019,6 +1039,108 @@ app.post('/newsletter/unsubscribe', async (req, res) => {
   }
 });
 
+// POST /brochure-request - Brochure request form
+app.post('/brochure-request', formLimiter, async (req, res) => {
+  try {
+    const { name, email, phoneNumber, city, educationQualification } = req.body;
+
+    // Required fields
+    if (!name || !email || !phoneNumber || !city || !educationQualification) {
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+
+    // Validate email & phone
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
+    }
+    if (!isValidPhone(phoneNumber)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid phone number.' });
+    }
+
+    // Validate lengths
+    const nameTrim = String(name).trim();
+    const cityTrim = String(city).trim();
+    const eduTrim = String(educationQualification).trim();
+    if (nameTrim.length < 2 || nameTrim.length > 100) {
+      return res.status(400).json({ success: false, message: 'Name must be between 2 and 100 characters.' });
+    }
+    if (cityTrim.length < 2 || cityTrim.length > 100) {
+      return res.status(400).json({ success: false, message: 'City must be between 2 and 100 characters.' });
+    }
+    if (eduTrim.length < 2 || eduTrim.length > 200) {
+      return res.status(400).json({ success: false, message: 'Education qualification must be between 2 and 200 characters.' });
+    }
+
+    const doc = new BrochureRequest({
+      name: nameTrim,
+      email: String(email).trim().toLowerCase(),
+      phoneNumber: String(phoneNumber).trim(),
+      city: cityTrim,
+      educationQualification: eduTrim
+    });
+    await doc.save();
+
+    return res.status(201).json({ success: true, message: 'Your brochure request has been submitted. We will contact you soon.' });
+  } catch (err) {
+    console.error('Brochure request error:', err);
+    return res.status(500).json({ success: false, message: 'Server error. Please try again later.' });
+  }
+});
+
+// POST /voucher-request - Voucher request (enterprise watchers)
+app.post('/voucher-request', formLimiter, async (req, res) => {
+  try {
+    const { name, email, phoneNumber, jobRole, organization, numberOfWatchers } = req.body;
+
+    // Required fields
+    if (!name || !email || !phoneNumber || !jobRole || !organization || numberOfWatchers === undefined) {
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+
+    // Validate email & phone
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid email address.' });
+    }
+    if (!isValidPhone(phoneNumber)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid phone number.' });
+    }
+
+    // Validate lengths
+    const nameTrim = String(name).trim();
+    const roleTrim = String(jobRole).trim();
+    const orgTrim = String(organization).trim();
+    if (nameTrim.length < 2 || nameTrim.length > 100) {
+      return res.status(400).json({ success: false, message: 'Name must be between 2 and 100 characters.' });
+    }
+    if (roleTrim.length < 2 || roleTrim.length > 100) {
+      return res.status(400).json({ success: false, message: 'Job role must be between 2 and 100 characters.' });
+    }
+    if (orgTrim.length < 2 || orgTrim.length > 200) {
+      return res.status(400).json({ success: false, message: 'Organization must be between 2 and 200 characters.' });
+    }
+
+    // Validate numberOfWatchers
+    const watchersNum = Number(numberOfWatchers);
+    if (!Number.isFinite(watchersNum) || watchersNum < 1 || watchersNum > 10000) {
+      return res.status(400).json({ success: false, message: 'numberOfWatchers must be a number between 1 and 10000.' });
+    }
+
+    const doc = new VoucherRequest({
+      name: nameTrim,
+      email: String(email).trim().toLowerCase(),
+      phoneNumber: String(phoneNumber).trim(),
+      jobRole: roleTrim,
+      organization: orgTrim,
+      numberOfWatchers: watchersNum
+    });
+    await doc.save();
+
+    return res.status(201).json({ success: true, message: 'Your voucher request has been submitted. Our team will reach out shortly.' });
+  } catch (err) {
+    console.error('Voucher request error:', err);
+    return res.status(500).json({ success: false, message: 'Server error. Please try again later.' });
+  }
+});
 // GET /admin/contact-forms - Admin endpoint for contact form submissions
 app.get('/admin/contact-forms', async (req, res) => {
   try {
