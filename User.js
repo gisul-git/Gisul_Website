@@ -19,6 +19,9 @@ const userSchema = new mongoose.Schema({
   emailVerificationToken: { type: String, index: { unique: false, sparse: true } },
   emailVerificationExpires: { type: Date },
   emailVerifiedAt: { type: Date },
+  // Password reset
+  passwordResetToken: { type: String },
+  passwordResetExpires: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
 

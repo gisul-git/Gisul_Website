@@ -22,7 +22,6 @@ const rateLimit = require('express-rate-limit');
 const { getConfig } = require('./config/env');
 const crypto = require('crypto');
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
-
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
 const Progress = require('./Progress');
@@ -76,6 +75,41 @@ function generateVerificationToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+// Password reset email via AWS SES
+async function sendPasswordResetEmail(toEmail, token) {
+  const client = getSesClient();
+  if (!client) throw new Error('Email service not configured');
+  const resetUrl = `${cfg.frontendBaseUrl}/reset-password?token=${token}`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#222">
+      <h2 style="color:#111;margin-bottom:16px">Password Reset Request - Gisul</h2>
+      <p>We received a request to reset your password. Click the button below to set a new password. This link is valid for 1 hour.</p>
+      <p style="margin:24px 0">
+        <a href="${resetUrl}" style="background:#0d6efd;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;display:inline-block">Reset Password</a>
+      </p>
+      <p>If the button doesn't work, copy and paste this link into your browser:</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0"/>
+      <p style="font-size:13px;color:#555">If you did not request a password reset, you can safely ignore this email. The link will expire in 1 hour.</p>
+    </div>
+  `;
+  const text = `Password Reset Request - Gisul\n\n` +
+    `We received a request to reset your password. Use the link below within 1 hour:\n${resetUrl}\n\n` +
+    `If you did not request this, you can ignore this email.`;
+  const params = {
+    Source: cfg.aws.sesFromEmail,
+    Destination: { ToAddresses: [toEmail] },
+    Message: {
+      Subject: { Data: 'Password Reset Request - Gisul' },
+      Body: {
+        Text: { Data: text },
+        Html: { Data: html }
+      }
+    }
+  };
+  await client.send(new SendEmailCommand(params));
+}
+
 // Fail-fast config validation helper
 function requireKeys(obj, keys, name = 'config') {
   const missing = keys.filter(k => !obj || obj[k] === undefined || obj[k] === null || obj[k] === '');
@@ -126,7 +160,8 @@ app.use([
   '/apply-trainer','/course/image',
   '/payment/success','/orders','/progress','/protected',
   '/auth/google','/auth/google/callback',
-  '/signup'
+  '/signup',
+  '/forgot-password','/reset-password','/verify-reset-token'
 ], requireDbReady);
 
 // Session middleware will be mounted AFTER Mongo connects
@@ -318,6 +353,107 @@ app.post('/resend-verification', async (req, res) => {
   }
 });
 
+// Forgot Password - rate limiter 3 per hour
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  message: { success: false, message: 'Too many password reset attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// POST /forgot-password
+app.post('/forgot-password', forgotPasswordLimiter, async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, message: 'Valid email is required.' });
+    }
+
+    // Normalize email and find user (case-insensitive)
+    const normalized = String(email).trim().toLowerCase();
+    const user = await User.findOne({ email: normalized });
+
+    // If no user, return generic success to prevent enumeration
+    if (!user) {
+      return res.status(200).json({ success: true, message: 'Password reset instructions have been sent to your email.' });
+    }
+
+    // Prevent for OAuth-only accounts
+    if (!user.password && user.oauthProvider) {
+      return res.status(400).json({ success: false, message: 'This account uses OAuth login. Use Google sign-in.' });
+    }
+
+    // Generate token and store hashed
+    const token = crypto.randomBytes(32).toString('hex');
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
+    user.passwordResetToken = hashed;
+    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await user.save();
+
+    try {
+      await sendPasswordResetEmail(user.email, token);
+    } catch (emailErr) {
+      // Cleanup on failure
+      user.passwordResetToken = undefined;
+      user.passwordResetExpires = undefined;
+      await user.save();
+      console.error('Password reset email send failed:', emailErr);
+      return res.status(502).json({ success: false, message: 'Failed to send reset email. Please try again later.' });
+    }
+
+    return res.status(200).json({ success: true, message: 'Password reset instructions have been sent to your email.' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    return res.status(500).json({ success: false, message: 'Server error. Please try again later.' });
+  }
+});
+
+// GET /verify-reset-token/:token
+app.get('/verify-reset-token/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token) return res.status(400).json({ success: false, message: 'Missing token' });
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({ passwordResetToken: hashed, passwordResetExpires: { $gt: new Date() } });
+    if (!user) return res.status(400).json({ success: false, message: 'Invalid or expired token' });
+    return res.json({ success: true, email: user.email });
+  } catch (err) {
+    console.error('Verify reset token error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// POST /reset-password
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword, confirmPassword } = req.body || {};
+    if (!token || !newPassword || !confirmPassword) {
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ success: false, message: 'Passwords do not match.' });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await User.findOne({ passwordResetToken: hashed, passwordResetExpires: { $gt: new Date() } });
+    if (!user) return res.status(400).json({ success: false, message: 'Invalid or expired token.' });
+
+    const hashedPassword = await bcrypt.hash(String(newPassword), 10);
+    user.password = hashedPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    return res.json({ success: true, message: 'Password has been reset successfully.' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    return res.status(500).json({ success: false, message: 'Server error. Please try again later.' });
+  }
+});
 // Middleware to require verified email for protected operations
 function requireEmailVerification(req, res, next) {
   if (!req.session?.isEmailVerified) {
