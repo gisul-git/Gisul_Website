@@ -22,11 +22,13 @@ const rateLimit = require('express-rate-limit');
 const { getConfig } = require('./config/env');
 const crypto = require('crypto');
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const cron = require('node-cron');
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
 const Progress = require('./Progress');
 const BrochureRequest = require('./BrochureRequest');
 const VoucherRequest = require('./VoucherRequest');
+const InstagramPost = require('./Instagram');
 const ContactForm = require('./ContactForm');
 const Newsletter = require('./Newsletter');
 
@@ -1173,6 +1175,135 @@ app.post('/newsletter/unsubscribe', async (req, res) => {
   }
 });
 
+// ===== INSTAGRAM INTEGRATION (Graph API) =====
+
+// Build Instagram API helpers
+const getInstagramPosts = async () => {
+  try {
+    const accountId = cfg.instagram?.businessAccountId;
+    const accessToken = cfg.instagram?.accessToken;
+    if (!accountId || !accessToken) {
+      console.warn('Instagram env vars missing: INSTAGRAM_BUSINESS_ACCOUNT_ID or INSTAGRAM_ACCESS_TOKEN');
+      return [];
+    }
+
+    const fields = [
+      'id','caption','media_type','media_url','permalink','timestamp','like_count','comments_count','thumbnail_url',
+      'children{media_type,media_url}'
+    ].join(',');
+
+    const url = `https://graph.facebook.com/v21.0/${accountId}/media`;
+    const params = new URLSearchParams({ fields, access_token: accessToken, limit: '25' });
+    const resp = await axios.get(`${url}?${params.toString()}`);
+    const data = Array.isArray(resp?.data?.data) ? resp.data.data : [];
+    return data;
+  } catch (err) {
+    console.error('Instagram getInstagramPosts error:', err?.response?.data || err.message);
+    return [];
+  }
+};
+
+const syncInstagramPosts = async () => {
+  try {
+    const posts = await getInstagramPosts();
+    if (!Array.isArray(posts) || posts.length === 0) return 0;
+    let upserted = 0;
+    for (const p of posts) {
+      const children = Array.isArray(p?.children?.data)
+        ? p.children.data.map(c => ({ mediaType: c.media_type, mediaUrl: c.media_url }))
+        : [];
+      const update = {
+        postId: p.id,
+        caption: p.caption || '',
+        mediaType: p.media_type,
+        mediaUrl: p.media_url || '',
+        permalink: p.permalink || '',
+        timestamp: p.timestamp ? new Date(p.timestamp) : undefined,
+        likeCount: typeof p.like_count === 'number' ? p.like_count : 0,
+        commentsCount: typeof p.comments_count === 'number' ? p.comments_count : 0,
+        thumbnail: p.thumbnail_url || '',
+        children
+      };
+      const res = await InstagramPost.findOneAndUpdate(
+        { postId: p.id },
+        { $set: update },
+        { upsert: true, new: true }
+      );
+      if (res) upserted += 1;
+    }
+    console.log(`📸 Instagram sync complete. Upserted ${upserted} posts.`);
+    return upserted;
+  } catch (err) {
+    console.error('Instagram syncInstagramPosts error:', err.message);
+    return 0;
+  }
+};
+
+// Public endpoint: GET /api/instagram/posts
+app.get('/api/instagram/posts', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
+    const skip = (page - 1) * limit;
+    const query = {};
+
+    const total = await InstagramPost.countDocuments(query);
+    const posts = await InstagramPost.find(query)
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('-__v');
+
+    return res.json({
+      success: true,
+      data: posts,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (err) {
+    console.error('GET /api/instagram/posts error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Manual sync: POST /api/instagram/sync
+app.post('/api/instagram/sync', async (_req, res) => {
+  try {
+    const count = await syncInstagramPosts();
+    return res.json({ success: true, message: `Synced ${count} posts` });
+  } catch (err) {
+    console.error('POST /api/instagram/sync error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Refresh long-lived token: POST /api/instagram/refresh-token
+app.post('/api/instagram/refresh-token', async (req, res) => {
+  try {
+    const appId = cfg.facebook?.appId;
+    const appSecret = cfg.facebook?.appSecret;
+    const fbExchangeToken = cfg.instagram?.accessToken;
+    if (!appId || !appSecret || !fbExchangeToken) {
+      return res.status(400).json({ success: false, message: 'Missing Facebook app credentials or access token' });
+    }
+
+    const url = 'https://graph.facebook.com/v21.0/oauth/access_token';
+    const params = new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: appId,
+      client_secret: appSecret,
+      fb_exchange_token: fbExchangeToken
+    });
+    const resp = await axios.get(`${url}?${params.toString()}`);
+    const { access_token, token_type, expires_in } = resp.data || {};
+    if (!access_token) {
+      return res.status(502).json({ success: false, message: 'Failed to refresh token' });
+    }
+    return res.json({ success: true, token: access_token, tokenType: token_type, expiresIn: expires_in });
+  } catch (err) {
+    console.error('POST /api/instagram/refresh-token error:', err?.response?.data || err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // POST /brochure-request - Brochure request form
 app.post('/brochure-request', formLimiter, async (req, res) => {
   try {
@@ -1389,10 +1520,30 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
   .then(() => {
     console.log('✅ Mongo connected');
     dbReady = true;
+    // Initial Instagram sync after DB is ready
+    (async () => {
+      try {
+        const count = await syncInstagramPosts();
+        console.log(`🚀 Initial Instagram sync done. Posts: ${count}`);
+      } catch (e) {
+        console.error('Initial Instagram sync failed:', e?.message || e);
+      }
+    })();
   })
   .catch(err => {
     console.error('❌ Mongo connect failed (server still running):', err.message);
   });
+
+// Schedule Instagram sync every 30 minutes (only useful after dbReady)
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    if (!dbReady) return;
+    const count = await syncInstagramPosts();
+    console.log(`⏱️ Cron Instagram sync complete. Posts: ${count}`);
+  } catch (err) {
+    console.error('Cron Instagram sync error:', err.message);
+  }
+});
 
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason);

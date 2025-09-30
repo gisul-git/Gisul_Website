@@ -41,6 +41,14 @@ const ENV_CONFIG = {
       sesRegion: process.env.AWS_SES_REGION_DEV || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_DEV || process.env.AWS_SES_FROM_EMAIL
     },
+    instagram: {
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_DEV || process.env.INSTAGRAM_ACCESS_TOKEN,
+      businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
+    },
+    facebook: {
+      appId: process.env.FACEBOOK_APP_ID_DEV || process.env.FACEBOOK_APP_ID,
+      appSecret: process.env.FACEBOOK_APP_SECRET_DEV || process.env.FACEBOOK_APP_SECRET
+    },
     logLevel: process.env.LOG_LEVEL_DEV
   },
   qa: {
@@ -67,6 +75,14 @@ const ENV_CONFIG = {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_QA || process.env.AWS_SECRET_ACCESS_KEY,
       sesRegion: process.env.AWS_SES_REGION_QA || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_QA || process.env.AWS_SES_FROM_EMAIL
+    },
+    instagram: {
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_QA || process.env.INSTAGRAM_ACCESS_TOKEN,
+      businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID_QA || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
+    },
+    facebook: {
+      appId: process.env.FACEBOOK_APP_ID_QA || process.env.FACEBOOK_APP_ID,
+      appSecret: process.env.FACEBOOK_APP_SECRET_QA || process.env.FACEBOOK_APP_SECRET
     },
     logLevel: process.env.LOG_LEVEL_QA
   },
@@ -95,6 +111,14 @@ const ENV_CONFIG = {
       sesRegion: process.env.AWS_SES_REGION_UAT || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_UAT || process.env.AWS_SES_FROM_EMAIL
     },
+    instagram: {
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_UAT || process.env.INSTAGRAM_ACCESS_TOKEN,
+      businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID_UAT || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
+    },
+    facebook: {
+      appId: process.env.FACEBOOK_APP_ID_UAT || process.env.FACEBOOK_APP_ID,
+      appSecret: process.env.FACEBOOK_APP_SECRET_UAT || process.env.FACEBOOK_APP_SECRET
+    },
     logLevel: process.env.LOG_LEVEL_UAT || 'info'
   },
   prod: {
@@ -122,6 +146,14 @@ const ENV_CONFIG = {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
       sesRegion: process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL
+    },
+    instagram: {
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+      businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
+    },
+    facebook: {
+      appId: process.env.FACEBOOK_APP_ID,
+      appSecret: process.env.FACEBOOK_APP_SECRET
     },
     logLevel: process.env.LOG_LEVEL
   }
