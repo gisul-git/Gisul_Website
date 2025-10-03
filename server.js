@@ -30,6 +30,7 @@ const BrochureRequest = require('./BrochureRequest');
 const VoucherRequest = require('./VoucherRequest');
 const InstagramPost = require('./Instagram');
 const FacebookPost = require('./FacebookPost');
+const TwitterPost = require('./TwitterPost');
 const ContactForm = require('./ContactForm');
 const Newsletter = require('./Newsletter');
 
@@ -1268,6 +1269,91 @@ const getFacebookPosts = async () => {
   }
 };
 
+// ===== TWITTER INTEGRATION (API v2) =====
+
+// Fetch tweets for a user
+const getTwitterTweets = async () => {
+  try {
+    const bearer = cfg.twitter?.bearerToken;
+    const userId = cfg.twitter?.userId;
+    if (!bearer || !userId) {
+      console.warn('Twitter env vars missing: TWITTER_BEARER_TOKEN or TWITTER_USER_ID');
+      return [];
+    }
+
+    const url = `https://api.twitter.com/2/users/${userId}/tweets`;
+    const params = new URLSearchParams({
+      max_results: '20',
+      expansions: 'attachments.media_keys,entities.mentions.username',
+      'tweet.fields': 'created_at,entities,public_metrics',
+      'media.fields': 'media_key,type,url,preview_image_url'
+    });
+    const resp = await axios.get(`${url}?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${bearer}` }
+    });
+
+    const tweets = Array.isArray(resp?.data?.data) ? resp.data.data : [];
+    const includes = resp?.data?.includes || {};
+    const mediaMap = new Map();
+    if (Array.isArray(includes.media)) {
+      for (const m of includes.media) mediaMap.set(m.media_key, m);
+    }
+
+    // Attach resolved media array per tweet
+    const enriched = tweets.map(t => {
+      const mediaKeys = t?.attachments?.media_keys || [];
+      const media = mediaKeys.map(k => mediaMap.get(k)).filter(Boolean).map(m => ({
+        mediaKey: m.media_key,
+        type: m.type,
+        url: m.url || '',
+        previewImageUrl: m.preview_image_url || ''
+      }));
+      return { ...t, _mediaResolved: media };
+    });
+    return enriched;
+  } catch (err) {
+    console.error('Twitter getTwitterTweets error:', err?.response?.data || err.message);
+    return [];
+  }
+};
+
+const syncTwitterTweets = async () => {
+  try {
+    const tweets = await getTwitterTweets();
+    if (!Array.isArray(tweets) || tweets.length === 0) return 0;
+    let upserted = 0;
+    for (const t of tweets) {
+      const entities = t.entities || {};
+      const hashtags = Array.isArray(entities.hashtags) ? entities.hashtags.map(h => h.tag) : [];
+      const mentions = Array.isArray(entities.mentions) ? entities.mentions.map(m => m.username) : [];
+      const metrics = t.public_metrics || {};
+      const update = {
+        tweetId: t.id,
+        text: t.text || '',
+        createdTime: t.created_at ? new Date(t.created_at) : undefined,
+        likeCount: metrics.like_count || 0,
+        retweetCount: metrics.retweet_count || 0,
+        replyCount: metrics.reply_count || 0,
+        quoteCount: metrics.quote_count || 0,
+        media: Array.isArray(t._mediaResolved) ? t._mediaResolved : [],
+        hashtags,
+        mentions,
+        permalink: `https://twitter.com/i/web/status/${t.id}`
+      };
+      const res = await TwitterPost.findOneAndUpdate(
+        { tweetId: t.id },
+        { $set: update },
+        { upsert: true, new: true }
+      );
+      if (res) upserted += 1;
+    }
+    console.log(`🐦 Twitter sync complete. Upserted ${upserted} tweets.`);
+    return upserted;
+  } catch (err) {
+    console.error('Twitter syncTwitterTweets error:', err.message);
+    return 0;
+  }
+};
 const syncFacebookPosts = async () => {
   try {
     const posts = await getFacebookPosts();
@@ -1406,6 +1492,44 @@ app.post('/api/facebook/sync', async (_req, res) => {
   }
 });
 
+// ===== TWITTER API ENDPOINTS =====
+
+// Public endpoint: GET /api/twitter/tweets
+app.get('/api/twitter/tweets', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
+    const skip = (page - 1) * limit;
+    const query = {};
+
+    const total = await TwitterPost.countDocuments(query);
+    const tweets = await TwitterPost.find(query)
+      .sort({ createdTime: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('-__v');
+
+    return res.json({
+      success: true,
+      data: tweets,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (err) {
+    console.error('GET /api/twitter/tweets error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Manual sync: POST /api/twitter/sync
+app.post('/api/twitter/sync', async (_req, res) => {
+  try {
+    const count = await syncTwitterTweets();
+    return res.json({ success: true, message: `Synced ${count} tweets` });
+  } catch (err) {
+    console.error('POST /api/twitter/sync error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // Combined endpoint: GET /api/social/posts
 app.get('/api/social/posts', async (req, res) => {
   try {
@@ -1414,9 +1538,10 @@ app.get('/api/social/posts', async (req, res) => {
     const skip = (page - 1) * limit;
 
     // Fetch both Instagram and Facebook posts
-    const [instagramPosts, facebookPosts] = await Promise.all([
+    const [instagramPosts, facebookPosts, twitterPosts] = await Promise.all([
       InstagramPost.find({}).sort({ timestamp: -1 }).select('-__v'),
-      FacebookPost.find({}).sort({ createdTime: -1 }).select('-__v')
+      FacebookPost.find({}).sort({ createdTime: -1 }).select('-__v'),
+      TwitterPost.find({}).sort({ createdTime: -1 }).select('-__v')
     ]);
 
     // Normalize to unified format
@@ -1446,6 +1571,19 @@ app.get('/api/social/posts', async (req, res) => {
         type: p.type || 'status',
         isVideo: p.type === 'video',
         isCarousel: false
+      })),
+      ...twitterPosts.map(t => ({
+        id: t.tweetId,
+        platform: 'twitter',
+        caption: t.text || '',
+        mediaUrl: Array.isArray(t.media) && t.media.length ? (t.media[0].url || t.media[0].previewImageUrl || '') : '',
+        permalink: t.permalink || `https://twitter.com/i/web/status/${t.tweetId}`,
+        timestamp: t.createdTime,
+        likes: t.likeCount || 0,
+        comments: t.replyCount || 0,
+        type: 'tweet',
+        isVideo: Array.isArray(t.media) && t.media[0]?.type === 'video',
+        isCarousel: Array.isArray(t.media) && t.media.length > 1
       }))
     ];
 
@@ -1698,7 +1836,8 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
     console.error('❌ Mongo connect failed (server still running):', err.message);
   });
 
-// Schedule Instagram sync every 30 minutes (only useful after dbReady)
+// Schedule social syncs (Instagram/Facebook every 30m, Twitter every 10m)
+// Existing 30-minute job for Instagram and Facebook
 cron.schedule('*/30 * * * *', async () => {
   try {
     if (!dbReady) return;
@@ -1709,6 +1848,17 @@ cron.schedule('*/30 * * * *', async () => {
     console.log(`⏱️ Cron sync complete. Instagram: ${instagramCount}, Facebook: ${facebookCount}`);
   } catch (err) {
     console.error('Cron sync error:', err.message);
+  }
+});
+
+// New 10-minute job for Twitter (reads limited on free tier)
+cron.schedule('*/10 * * * *', async () => {
+  try {
+    if (!dbReady) return;
+    const twitterCount = await syncTwitterTweets();
+    console.log(`⏱️ Cron sync complete. Twitter: ${twitterCount}`);
+  } catch (err) {
+    console.error('Cron Twitter sync error:', err.message);
   }
 });
 

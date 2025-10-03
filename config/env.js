@@ -159,6 +159,10 @@ const ENV_CONFIG = {
       pageId: process.env.FACEBOOK_PAGE_ID,
       pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
+    twitter: {
+      bearerToken: process.env.TWITTER_BEARER_TOKEN,
+      userId: process.env.TWITTER_USER_ID
+    },
     logLevel: process.env.LOG_LEVEL
   }
 };
