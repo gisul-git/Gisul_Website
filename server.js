@@ -1822,11 +1822,12 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
     // Initial Instagram sync after DB is ready
     (async () => {
       try {
-        const [instagramCount, facebookCount] = await Promise.all([
+        const [instagramCount, facebookCount, twitterCount] = await Promise.all([
           syncInstagramPosts(),
-          syncFacebookPosts()
+          syncFacebookPosts(),
+          syncTwitterTweets()
         ]);
-        console.log(`🚀 Initial sync done. Instagram: ${instagramCount}, Facebook: ${facebookCount}`);
+        console.log(`🚀 Initial sync done. Instagram: ${instagramCount}, Facebook: ${facebookCount}, Twitter: ${twitterCount}`);  
       } catch (e) {
         console.error('Initial sync failed:', e?.message || e);
       }
