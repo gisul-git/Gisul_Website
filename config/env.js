@@ -47,7 +47,8 @@ const ENV_CONFIG = {
     },
     facebook: {
       appId: process.env.FACEBOOK_APP_ID_DEV || process.env.FACEBOOK_APP_ID,
-      appSecret: process.env.FACEBOOK_APP_SECRET_DEV || process.env.FACEBOOK_APP_SECRET
+      pageId: process.env.FACEBOOK_PAGE_ID_DEV || process.env.FACEBOOK_PAGE_ID,
+      pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_DEV || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
     logLevel: process.env.LOG_LEVEL_DEV
   },
@@ -82,7 +83,8 @@ const ENV_CONFIG = {
     },
     facebook: {
       appId: process.env.FACEBOOK_APP_ID_QA || process.env.FACEBOOK_APP_ID,
-      appSecret: process.env.FACEBOOK_APP_SECRET_QA || process.env.FACEBOOK_APP_SECRET
+      pageId: process.env.FACEBOOK_PAGE_ID_QA || process.env.FACEBOOK_PAGE_ID,
+      pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_QA || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
     logLevel: process.env.LOG_LEVEL_QA
   },
@@ -117,7 +119,8 @@ const ENV_CONFIG = {
     },
     facebook: {
       appId: process.env.FACEBOOK_APP_ID_UAT || process.env.FACEBOOK_APP_ID,
-      appSecret: process.env.FACEBOOK_APP_SECRET_UAT || process.env.FACEBOOK_APP_SECRET
+      pageId: process.env.FACEBOOK_PAGE_ID_UAT || process.env.FACEBOOK_PAGE_ID,
+      pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_UAT || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
     logLevel: process.env.LOG_LEVEL_UAT || 'info'
   },
@@ -153,7 +156,8 @@ const ENV_CONFIG = {
     },
     facebook: {
       appId: process.env.FACEBOOK_APP_ID,
-      appSecret: process.env.FACEBOOK_APP_SECRET
+      pageId: process.env.FACEBOOK_PAGE_ID,
+      pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
     logLevel: process.env.LOG_LEVEL
   }
