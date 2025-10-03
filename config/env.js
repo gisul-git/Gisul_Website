@@ -50,6 +50,10 @@ const ENV_CONFIG = {
       pageId: process.env.FACEBOOK_PAGE_ID_DEV || process.env.FACEBOOK_PAGE_ID,
       pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_DEV || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
+    twitter: {
+      bearerToken: process.env.TWITTER_BEARER_TOKEN_DEV || process.env.TWITTER_BEARER_TOKEN,
+      userId: process.env.TWITTER_USER_ID_DEV || process.env.TWITTER_USER_ID
+    },    
     logLevel: process.env.LOG_LEVEL_DEV
   },
   qa: {
@@ -86,6 +90,10 @@ const ENV_CONFIG = {
       pageId: process.env.FACEBOOK_PAGE_ID_QA || process.env.FACEBOOK_PAGE_ID,
       pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_QA || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
+    twitter: {
+      bearerToken: process.env.TWITTER_BEARER_TOKEN_QA || process.env.TWITTER_BEARER_TOKEN,
+      userId: process.env.TWITTER_USER_ID_QA || process.env.TWITTER_USER_ID
+    },    
     logLevel: process.env.LOG_LEVEL_QA
   },
   uat: {
@@ -122,6 +130,10 @@ const ENV_CONFIG = {
       pageId: process.env.FACEBOOK_PAGE_ID_UAT || process.env.FACEBOOK_PAGE_ID,
       pageAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN_UAT || process.env.FACEBOOK_PAGE_ACCESS_TOKEN
     },
+    twitter: {
+      bearerToken: process.env.TWITTER_BEARER_TOKEN_UAT || process.env.TWITTER_BEARER_TOKEN,
+      userId: process.env.TWITTER_USER_ID_UAT || process.env.TWITTER_USER_ID
+    },    
     logLevel: process.env.LOG_LEVEL_UAT || 'info'
   },
   prod: {
