@@ -31,6 +31,7 @@ const VoucherRequest = require('./VoucherRequest');
 const InstagramPost = require('./Instagram');
 const FacebookPost = require('./FacebookPost');
 const TwitterPost = require('./TwitterPost');
+const YouTubeVideo = require('./YouTubeVideo');
 const ContactForm = require('./ContactForm');
 const Newsletter = require('./Newsletter');
 
@@ -1362,6 +1363,138 @@ const syncTwitterTweets = async () => {
     return 0;
   }
 };
+
+// ===== YOUTUBE INTEGRATION (Data API v3) =====
+
+// Fetch videos from YouTube channel
+const getYouTubeVideos = async () => {
+  try {
+    const apiKey = cfg.youtube?.apiKey;
+    const channelId = cfg.youtube?.channelId;
+    
+    if (!apiKey || !channelId) {
+      console.warn('YouTube env vars missing: YOUTUBE_API_KEY or YOUTUBE_CHANNEL_ID');
+      return [];
+    }
+
+    // Step 1: Get channel's uploads playlist ID
+    const channelUrl = 'https://www.googleapis.com/youtube/v3/channels';
+    const channelParams = new URLSearchParams({
+      part: 'contentDetails',
+      id: channelId,
+      key: apiKey
+    });
+    
+    const channelResp = await axios.get(`${channelUrl}?${channelParams.toString()}`);
+    const uploadsPlaylistId = channelResp?.data?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    
+    if (!uploadsPlaylistId) {
+      console.error('YouTube: Could not find uploads playlist for channel:', channelId);
+      return [];
+    }
+
+    // Step 2: Get videos from uploads playlist
+    const playlistUrl = 'https://www.googleapis.com/youtube/v3/playlistItems';
+    const playlistParams = new URLSearchParams({
+      part: 'snippet,contentDetails',
+      playlistId: uploadsPlaylistId,
+      maxResults: '50',
+      key: apiKey
+    });
+    
+    const playlistResp = await axios.get(`${playlistUrl}?${playlistParams.toString()}`);
+    const playlistItems = Array.isArray(playlistResp?.data?.items) ? playlistResp.data.items : [];
+    
+    if (playlistItems.length === 0) {
+      console.log('YouTube: No videos found in uploads playlist');
+      return [];
+    }
+
+    // Step 3: Get detailed video information and statistics
+    const videoIds = playlistItems.map(item => item.snippet.resourceId.videoId).join(',');
+    const videosUrl = 'https://www.googleapis.com/youtube/v3/videos';
+    const videosParams = new URLSearchParams({
+      part: 'snippet,statistics,contentDetails,player',
+      id: videoIds,
+      key: apiKey
+    });
+    
+    const videosResp = await axios.get(`${videosUrl}?${videosParams.toString()}`);
+    const videos = Array.isArray(videosResp?.data?.items) ? videosResp.data.items : [];
+    
+    return videos;
+  } catch (err) {
+    // Handle specific YouTube API errors
+    if (err?.response?.status === 403) {
+      console.error('YouTube API: Quota exceeded or API key invalid');
+    } else if (err?.response?.status === 400) {
+      console.error('YouTube API: Bad request - check channel ID and API key');
+    } else if (err?.response?.status === 404) {
+      console.error('YouTube API: Channel not found');
+    }
+    console.error('YouTube getYouTubeVideos error:', err?.response?.data || err.message);
+    return [];
+  }
+};
+
+const syncYouTubeVideos = async () => {
+  try {
+    const videos = await getYouTubeVideos();
+    if (!Array.isArray(videos) || videos.length === 0) {
+      console.log('📺 YouTube sync: No videos returned from API');
+      return 0;
+    }
+    
+    let upserted = 0;
+    let errors = 0;
+    
+    for (const video of videos) {
+      try {
+        // Extract video data
+        const snippet = video.snippet || {};
+        const statistics = video.statistics || {};
+        const contentDetails = video.contentDetails || {};
+        const player = video.player || {};
+        
+        const update = {
+          videoId: video.id,
+          title: snippet.title || '',
+          description: snippet.description || '',
+          thumbnailUrl: snippet.thumbnails?.default?.url || '',
+          thumbnailHdUrl: snippet.thumbnails?.high?.url || snippet.thumbnails?.maxres?.url || '',
+          publishedAt: snippet.publishedAt ? new Date(snippet.publishedAt) : new Date(),
+          duration: contentDetails.duration || '',
+          viewCount: parseInt(statistics.viewCount || '0', 10),
+          likeCount: parseInt(statistics.likeCount || '0', 10),
+          commentCount: parseInt(statistics.commentCount || '0', 10),
+          tags: Array.isArray(snippet.tags) ? snippet.tags : [],
+          categoryId: snippet.categoryId || '',
+          channelTitle: snippet.channelTitle || '',
+          embedHtml: player.embedHtml || '',
+          updatedAt: new Date()
+        };
+        
+        const res = await YouTubeVideo.findOneAndUpdate(
+          { videoId: video.id },
+          { $set: update },
+          { upsert: true, new: true, runValidators: true }
+        );
+        
+        if (res) upserted++;
+      } catch (dbErr) {
+        console.error(`YouTube: Failed to upsert video ${video.id}:`, dbErr.message);
+        errors++;
+      }
+    }
+    
+    console.log(`📺 YouTube sync complete. Upserted: ${upserted}, Errors: ${errors}, Total fetched: ${videos.length}`);
+    return upserted;
+  } catch (err) {
+    console.error('YouTube syncYouTubeVideos error:', err.message);
+    throw err; // Propagate error for cron job awareness
+  }
+};
+
 const syncFacebookPosts = async () => {
   try {
     const posts = await getFacebookPosts();
@@ -1612,6 +1745,182 @@ app.post('/api/twitter/sync', async (_req, res) => {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+
+// ===== YOUTUBE API ENDPOINTS =====
+
+// Rate limiters for YouTube endpoints
+const youtubeVideosLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per 15 minutes per IP
+  message: { success: false, message: 'Too many YouTube requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const youtubeAdminLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 requests per hour per IP
+  message: { success: false, message: 'Too many admin YouTube requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Public endpoint: GET /api/youtube/videos
+app.get('/api/youtube/videos', youtubeVideosLimiter, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
+    const skip = (page - 1) * limit;
+    const sortBy = req.query.sortBy || 'publishedAt'; // publishedAt, viewCount, likeCount
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+    const channel = req.query.channel;
+
+    // Build query
+    const query = {};
+    if (channel) {
+      query.channelTitle = new RegExp(channel, 'i');
+    }
+
+    // Build sort object
+    const sort = {};
+    sort[sortBy] = sortOrder;
+
+    const total = await YouTubeVideo.countDocuments(query);
+    const videos = await YouTubeVideo.find(query)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .select('-__v');
+
+    return res.json({
+      success: true,
+      data: videos,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (err) {
+    console.error('GET /api/youtube/videos error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Public endpoint: GET /api/youtube/videos/:videoId
+app.get('/api/youtube/videos/:videoId', youtubeVideosLimiter, async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    
+    if (!videoId) {
+      return res.status(400).json({ success: false, message: 'Video ID is required' });
+    }
+
+    const video = await YouTubeVideo.findOne({ videoId }).select('-__v');
+    
+    if (!video) {
+      return res.status(404).json({ success: false, message: 'Video not found' });
+    }
+
+    return res.json({
+      success: true,
+      data: video
+    });
+  } catch (err) {
+    console.error('GET /api/youtube/videos/:videoId error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Public endpoint: GET /api/youtube/search
+app.get('/api/youtube/search', youtubeVideosLimiter, async (req, res) => {
+  try {
+    const { q: query } = req.query;
+    const page = Math.max(1, parseInt(req.query.page || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
+    const skip = (page - 1) * limit;
+
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({ success: false, message: 'Search query is required' });
+    }
+
+    // Search in title and description
+    const searchQuery = {
+      $or: [
+        { title: new RegExp(query.trim(), 'i') },
+        { description: new RegExp(query.trim(), 'i') },
+        { tags: new RegExp(query.trim(), 'i') }
+      ]
+    };
+
+    const total = await YouTubeVideo.countDocuments(searchQuery);
+    const videos = await YouTubeVideo.find(searchQuery)
+      .sort({ publishedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('-__v');
+
+    return res.json({
+      success: true,
+      data: videos,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+      query: query.trim()
+    });
+  } catch (err) {
+    console.error('GET /api/youtube/search error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Public endpoint: GET /api/youtube/stats
+app.get('/api/youtube/stats', youtubeVideosLimiter, async (req, res) => {
+  try {
+    const totalVideos = await YouTubeVideo.countDocuments();
+    const totalViews = await YouTubeVideo.aggregate([
+      { $group: { _id: null, total: { $sum: '$viewCount' } } }
+    ]);
+    const totalLikes = await YouTubeVideo.aggregate([
+      { $group: { _id: null, total: { $sum: '$likeCount' } } }
+    ]);
+    const totalComments = await YouTubeVideo.aggregate([
+      { $group: { _id: null, total: { $sum: '$commentCount' } } }
+    ]);
+    
+    // Get most popular video
+    const mostPopularVideo = await YouTubeVideo.findOne({})
+      .sort({ viewCount: -1 })
+      .select('videoId title viewCount likeCount');
+
+    // Get channel stats
+    const channelStats = await YouTubeVideo.aggregate([
+      { $group: { _id: '$channelTitle', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    return res.json({
+      success: true,
+      data: {
+        totalVideos,
+        totalViews: totalViews[0]?.total || 0,
+        totalLikes: totalLikes[0]?.total || 0,
+        totalComments: totalComments[0]?.total || 0,
+        mostPopularVideo,
+        channels: channelStats
+      }
+    });
+  } catch (err) {
+    console.error('GET /api/youtube/stats error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Admin endpoint: POST /api/youtube/sync
+app.post('/api/youtube/sync', youtubeAdminLimiter, async (_req, res) => {
+  try {
+    const count = await syncYouTubeVideos();
+    return res.json({ success: true, message: `Synced ${count} videos` });
+  } catch (err) {
+    console.error('POST /api/youtube/sync error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // Combined endpoint: GET /api/social/posts
 app.get('/api/social/posts', async (req, res) => {
   try {
@@ -1619,11 +1928,12 @@ app.get('/api/social/posts', async (req, res) => {
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
     const skip = (page - 1) * limit;
 
-    // Fetch both Instagram and Facebook posts
-    const [instagramPosts, facebookPosts, twitterPosts] = await Promise.all([
+    // Fetch all social media posts including YouTube
+    const [instagramPosts, facebookPosts, twitterPosts, youtubeVideos] = await Promise.all([
       InstagramPost.find({}).sort({ timestamp: -1 }).select('-__v'),
       FacebookPost.find({}).sort({ createdTime: -1 }).select('-__v'),
-      TwitterPost.find({}).sort({ createdTime: -1 }).select('-__v')
+      TwitterPost.find({}).sort({ createdTime: -1 }).select('-__v'),
+      YouTubeVideo.find({}).sort({ publishedAt: -1 }).select('-__v')
     ]);
 
     // Normalize to unified format
@@ -1666,6 +1976,25 @@ app.get('/api/social/posts', async (req, res) => {
         type: 'tweet',
         isVideo: Array.isArray(t.media) && t.media[0]?.type === 'video',
         isCarousel: Array.isArray(t.media) && t.media.length > 1
+      })),
+      ...youtubeVideos.map(v => ({
+        id: v.videoId,
+        platform: 'youtube',
+        caption: v.title || '',
+        description: v.description || '',
+        mediaUrl: v.thumbnailHdUrl || v.thumbnailUrl || '',
+        permalink: `https://www.youtube.com/watch?v=${v.videoId}`,
+        timestamp: v.publishedAt,
+        likes: v.likeCount || 0,
+        comments: v.commentCount || 0,
+        views: v.viewCount || 0,
+        duration: v.duration || '',
+        channelTitle: v.channelTitle || '',
+        type: 'video',
+        isVideo: true,
+        isCarousel: false,
+        embedHtml: v.embedHtml || '',
+        tags: v.tags || []
       }))
     ];
 
@@ -1904,12 +2233,13 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
     // Initial Instagram sync after DB is ready
     (async () => {
       try {
-        const [instagramCount, facebookCount, twitterCount] = await Promise.all([
+        const [instagramCount, facebookCount, twitterCount, youtubeCount] = await Promise.all([
           syncInstagramPosts(),
           syncFacebookPosts(),
-          syncTwitterTweets()
+          syncTwitterTweets(),
+          syncYouTubeVideos()
         ]);
-        console.log(`🚀 Initial sync done. Instagram: ${instagramCount}, Facebook: ${facebookCount}, Twitter: ${twitterCount}`);  
+        console.log(`🚀 Initial sync done. Instagram: ${instagramCount}, Facebook: ${facebookCount}, Twitter: ${twitterCount}, YouTube: ${youtubeCount}`);  
       } catch (e) {
         console.error('Initial sync failed:', e?.message || e);
       }
@@ -1922,7 +2252,7 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
   cron.schedule('*/30 * * * *', async () => {
     try {
       if (!dbReady) return;
-      const [instagramCount, facebookCount] = await Promise.all([
+      const [instagramCount, facebookCount, youtubeCount] = await Promise.all([
         syncInstagramPosts().catch(err => {
           console.error('Cron Instagram sync failed:', err.message);
           return 0;
@@ -1930,9 +2260,13 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
         syncFacebookPosts().catch(err => {
           console.error('Cron Facebook sync failed:', err.message);
           return 0;
+        }),
+        syncYouTubeVideos().catch(err => {
+          console.error('Cron YouTube sync failed:', err.message);
+          return 0;
         })
       ]);
-      console.log(`⏱️ Cron sync complete. Instagram: ${instagramCount}, Facebook: ${facebookCount}`);
+      console.log(`⏱️ Cron sync complete. Instagram: ${instagramCount}, Facebook: ${facebookCount}, YouTube: ${youtubeCount}`);
     } catch (err) {
       console.error('Cron sync error:', err.message);
     }

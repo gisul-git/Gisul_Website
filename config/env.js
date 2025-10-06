@@ -53,6 +53,10 @@ const ENV_CONFIG = {
     twitter: {
       bearerToken: process.env.TWITTER_BEARER_TOKEN_DEV || process.env.TWITTER_BEARER_TOKEN,
       userId: process.env.TWITTER_USER_ID_DEV || process.env.TWITTER_USER_ID
+    },
+    youtube: {
+      apiKey: process.env.YOUTUBE_API_KEY_DEV || process.env.YOUTUBE_API_KEY,
+      channelId: process.env.YOUTUBE_CHANNEL_ID_DEV || process.env.YOUTUBE_CHANNEL_ID
     },    
     logLevel: process.env.LOG_LEVEL_DEV
   },
@@ -93,6 +97,10 @@ const ENV_CONFIG = {
     twitter: {
       bearerToken: process.env.TWITTER_BEARER_TOKEN_QA || process.env.TWITTER_BEARER_TOKEN,
       userId: process.env.TWITTER_USER_ID_QA || process.env.TWITTER_USER_ID
+    },
+    youtube: {
+      apiKey: process.env.YOUTUBE_API_KEY_QA || process.env.YOUTUBE_API_KEY,
+      channelId: process.env.YOUTUBE_CHANNEL_ID_QA || process.env.YOUTUBE_CHANNEL_ID
     },    
     logLevel: process.env.LOG_LEVEL_QA
   },
@@ -133,6 +141,10 @@ const ENV_CONFIG = {
     twitter: {
       bearerToken: process.env.TWITTER_BEARER_TOKEN_UAT || process.env.TWITTER_BEARER_TOKEN,
       userId: process.env.TWITTER_USER_ID_UAT || process.env.TWITTER_USER_ID
+    },
+    youtube: {
+      apiKey: process.env.YOUTUBE_API_KEY_UAT || process.env.YOUTUBE_API_KEY,
+      channelId: process.env.YOUTUBE_CHANNEL_ID_UAT || process.env.YOUTUBE_CHANNEL_ID
     },    
     logLevel: process.env.LOG_LEVEL_UAT || 'info'
   },
@@ -174,6 +186,10 @@ const ENV_CONFIG = {
     twitter: {
       bearerToken: process.env.TWITTER_BEARER_TOKEN,
       userId: process.env.TWITTER_USER_ID
+    },
+    youtube: {
+      apiKey: process.env.YOUTUBE_API_KEY,
+      channelId: process.env.YOUTUBE_CHANNEL_ID
     },
     logLevel: process.env.LOG_LEVEL
   }
