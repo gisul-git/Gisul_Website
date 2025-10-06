@@ -1243,16 +1243,16 @@ const syncInstagramPosts = async () => {
 
 // ===== FACEBOOK INTEGRATION (Graph API) =====
 
-// Build Facebook API helpers
+// Improved Facebook API helper with better error handling
 const getFacebookPosts = async () => {
-  try {
-    const pageId = cfg.facebook?.pageId;
-    const accessToken = cfg.facebook?.pageAccessToken;
-    if (!pageId || !accessToken) {
-      console.warn('Facebook env vars missing: FACEBOOK_PAGE_ID or FACEBOOK_PAGE_ACCESS_TOKEN');
-      return [];
-    }
+  const pageId = cfg.facebook?.pageId;
+  const accessToken = cfg.facebook?.pageAccessToken;
+  
+  if (!pageId || !accessToken) {
+    throw new Error('Facebook credentials not configured: FACEBOOK_PAGE_ID or FACEBOOK_PAGE_ACCESS_TOKEN missing');
+  }
 
+  try {
     const fields = [
       'id','message','story','full_picture','permalink_url','created_time','type',
       'likes.summary(true)','comments.summary(true)','shares'
@@ -1264,8 +1264,16 @@ const getFacebookPosts = async () => {
     const data = Array.isArray(resp?.data?.data) ? resp.data.data : [];
     return data;
   } catch (err) {
+    // Specific error handling
+    if (err?.response?.status === 401) {
+      console.error('Facebook API: Token expired or invalid');
+    } else if (err?.response?.status === 429) {
+      console.error('Facebook API: Rate limit exceeded');
+    } else if (err?.response?.status === 400) {
+      console.error('Facebook API: Bad request - check configuration');
+    }
     console.error('Facebook getFacebookPosts error:', err?.response?.data || err.message);
-    return [];
+    throw err; // Propagate error instead of silent failure
   }
 };
 
@@ -1357,33 +1365,62 @@ const syncTwitterTweets = async () => {
 const syncFacebookPosts = async () => {
   try {
     const posts = await getFacebookPosts();
-    if (!Array.isArray(posts) || posts.length === 0) return 0;
+    if (!Array.isArray(posts) || posts.length === 0) {
+      console.log('📘 Facebook sync: No posts returned from API');
+      return 0;
+    }
+    
     let upserted = 0;
+    let errors = 0;
+    const validTypes = ['link', 'status', 'photo', 'video', 'offer', 'event', 'note', 'other'];
+    
     for (const p of posts) {
+      // Skip posts without required fields
+      if (!p.id || !p.created_time) {
+        console.warn(`Facebook: Skipping post missing required fields (id: ${p.id || 'unknown'})`);
+        errors++;
+        continue;
+      }
+      
+      // Normalize type to match schema enum
+      let postType = p.type || 'other';
+      if (!validTypes.includes(postType)) {
+        console.warn(`Facebook: Unknown post type "${postType}" for post ${p.id}, defaulting to "other"`);
+        postType = 'other';
+      }
+      
       const update = {
         postId: p.id,
         message: p.message || '',
         story: p.story || '',
         fullPicture: p.full_picture || '',
         permalink: p.permalink_url || '',
-        createdTime: p.created_time ? new Date(p.created_time) : undefined,
-        type: p.type || 'status',
-        likes: p.likes?.summary?.total_count || 0,
-        comments: p.comments?.summary?.total_count || 0,
-        shares: p.shares?.count || 0
+        createdTime: new Date(p.created_time), // Always create valid Date
+        type: postType,
+        likes: Math.max(0, p.likes?.summary?.total_count || 0),
+        comments: Math.max(0, p.comments?.summary?.total_count || 0),
+        shares: Math.max(0, p.shares?.count || 0),
+        updatedAt: new Date()
       };
-      const res = await FacebookPost.findOneAndUpdate(
-        { postId: p.id },
-        { $set: update },
-        { upsert: true, new: true }
-      );
-      if (res) upserted += 1;
+      
+      try {
+        const res = await FacebookPost.findOneAndUpdate(
+          { postId: p.id },
+          { $set: update },
+          { upsert: true, new: true, runValidators: true }
+        );
+        if (res) upserted++;
+      } catch (dbErr) {
+        console.error(`Facebook: Failed to upsert post ${p.id}:`, dbErr.message);
+        errors++;
+      }
     }
-    console.log(`📘 Facebook sync complete. Upserted ${upserted} posts.`);
+    
+    console.log(`📘 Facebook sync complete. Upserted: ${upserted}, Errors: ${errors}, Total fetched: ${posts.length}`);
     return upserted;
   } catch (err) {
     console.error('Facebook syncFacebookPosts error:', err.message);
-    return 0;
+    throw err; // Propagate error for cron job awareness
   }
 };
 
@@ -1478,6 +1515,51 @@ app.get('/api/facebook/posts', async (req, res) => {
   } catch (err) {
     console.error('GET /api/facebook/posts error:', err.message);
     return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+app.post('/api/facebook/refresh-token', async (req, res) => {
+  try {
+    const appId = cfg.facebook?.appId;
+    const appSecret = process.env.FACEBOOK_APP_SECRET;
+    const currentToken = cfg.facebook?.pageAccessToken;
+    
+    if (!appId || !appSecret || !currentToken) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing Facebook app credentials or page access token' 
+      });
+    }
+
+    const url = 'https://graph.facebook.com/v21.0/oauth/access_token';
+    const params = new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: appId,
+      client_secret: appSecret,
+      fb_exchange_token: currentToken
+    });
+    
+    const resp = await axios.get(`${url}?${params.toString()}`);
+    const { access_token, token_type, expires_in } = resp.data || {};
+    
+    if (!access_token) {
+      return res.status(502).json({ 
+        success: false, 
+        message: 'Failed to refresh Facebook token' 
+      });
+    }
+    
+    return res.json({ 
+      success: true, 
+      token: access_token, 
+      tokenType: token_type, 
+      expiresIn: expires_in 
+    });
+  } catch (err) {
+    console.error('Facebook token refresh error:', err?.response?.data || err.message);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error during token refresh' 
+    });
   }
 });
 
@@ -1837,31 +1919,38 @@ mongoose.connect(cfg.mongodbUri, { serverSelectionTimeoutMS: 15000 })
     console.error('❌ Mongo connect failed (server still running):', err.message);
   });
 
-// Schedule social syncs (Instagram/Facebook every 30m, Twitter every 10m)
-// Existing 30-minute job for Instagram and Facebook
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    if (!dbReady) return;
-    const [instagramCount, facebookCount] = await Promise.all([
-      syncInstagramPosts(),
-      syncFacebookPosts()
-    ]);
-    console.log(`⏱️ Cron sync complete. Instagram: ${instagramCount}, Facebook: ${facebookCount}`);
-  } catch (err) {
-    console.error('Cron sync error:', err.message);
-  }
-});
-
-// New 10-minute job for Twitter (reads limited on free tier)
-cron.schedule('*/10 * * * *', async () => {
-  try {
-    if (!dbReady) return;
-    const twitterCount = await syncTwitterTweets();
-    console.log(`⏱️ Cron sync complete. Twitter: ${twitterCount}`);
-  } catch (err) {
-    console.error('Cron Twitter sync error:', err.message);
-  }
-});
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      if (!dbReady) return;
+      const [instagramCount, facebookCount] = await Promise.all([
+        syncInstagramPosts().catch(err => {
+          console.error('Cron Instagram sync failed:', err.message);
+          return 0;
+        }),
+        syncFacebookPosts().catch(err => {
+          console.error('Cron Facebook sync failed:', err.message);
+          return 0;
+        })
+      ]);
+      console.log(`⏱️ Cron sync complete. Instagram: ${instagramCount}, Facebook: ${facebookCount}`);
+    } catch (err) {
+      console.error('Cron sync error:', err.message);
+    }
+  });
+  
+  // Twitter sync every 10 minutes
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      if (!dbReady) return;
+      const twitterCount = await syncTwitterTweets().catch(err => {
+        console.error('Cron Twitter sync failed:', err.message);
+        return 0;
+      });
+      console.log(`⏱️ Cron sync complete. Twitter: ${twitterCount}`);
+    } catch (err) {
+      console.error('Cron Twitter sync error:', err.message);
+    }
+  });
 
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason);
