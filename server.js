@@ -1255,7 +1255,7 @@ const getFacebookPosts = async () => {
 
   try {
     const fields = [
-      'id','message','story','full_picture','permalink_url','created_time','type',
+      'id','message','story','full_picture','permalink_url','created_time',
       'likes.summary(true)','comments.summary(true)','shares'
     ].join(',');
 
@@ -1505,7 +1505,6 @@ const syncFacebookPosts = async () => {
     
     let upserted = 0;
     let errors = 0;
-    const validTypes = ['link', 'status', 'photo', 'video', 'offer', 'event', 'note', 'other'];
     
     for (const p of posts) {
       // Skip posts without required fields
@@ -1515,12 +1514,6 @@ const syncFacebookPosts = async () => {
         continue;
       }
       
-      // Normalize type to match schema enum
-      let postType = p.type || 'other';
-      if (!validTypes.includes(postType)) {
-        console.warn(`Facebook: Unknown post type "${postType}" for post ${p.id}, defaulting to "other"`);
-        postType = 'other';
-      }
       
       const update = {
         postId: p.id,
@@ -1529,7 +1522,6 @@ const syncFacebookPosts = async () => {
         fullPicture: p.full_picture || '',
         permalink: p.permalink_url || '',
         createdTime: new Date(p.created_time), // Always create valid Date
-        type: postType,
         likes: Math.max(0, p.likes?.summary?.total_count || 0),
         comments: Math.max(0, p.comments?.summary?.total_count || 0),
         shares: Math.max(0, p.shares?.count || 0),
@@ -1960,8 +1952,8 @@ app.get('/api/social/posts', async (req, res) => {
         timestamp: p.createdTime,
         likes: p.likes || 0,
         comments: p.comments || 0,
-        type: p.type || 'status',
-        isVideo: p.type === 'video',
+        type: 'post',
+        isVideo: false,
         isCarousel: false
       })),
       ...twitterPosts.map(t => ({

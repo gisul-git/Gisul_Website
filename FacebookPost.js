@@ -7,11 +7,6 @@ const facebookPostSchema = new mongoose.Schema({
   fullPicture: { type: String, default: '' },
   permalink: { type: String, default: '' },
   createdTime: { type: Date, required: true },
-  type: { 
-    type: String, 
-    enum: ['link', 'status', 'photo', 'video', 'offer', 'event', 'note', 'other'],
-    default: 'other'
-  },
   likes: { type: Number, default: 0, min: 0 },
   comments: { type: Number, default: 0, min: 0 },
   shares: { type: Number, default: 0, min: 0 },
