@@ -261,6 +261,25 @@ app.use(session({
   }
 }));
 
+// Allow JWT Bearer token for cross-origin frontends (e.g. Webflow) that can't rely on session cookies
+function attachSessionFromJwt(req, res, next) {
+  if (req.session?.userId) return next();
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!token) return next();
+  try {
+    const decoded = jwt.verify(token, cfg.jwtSecret);
+    if (decoded.userId) {
+      req.session.userId = decoded.userId;
+      if (decoded.email) req.session.email = decoded.email;
+      if (decoded.username) req.session.username = decoded.username;
+      if (decoded.isEmailVerified !== undefined) req.session.isEmailVerified = decoded.isEmailVerified;
+    }
+  } catch (_) { /* ignore invalid/expired token */ }
+  next();
+}
+app.use(attachSessionFromJwt);
+
 // Login endpoint
 app.post('/login', async (req, res) => {
   try {
@@ -555,9 +574,9 @@ app.get('/auth/google/callback', async (req, res) => {
       }
     }
 
-    // Create JWT token
+    // Create JWT token (include isEmailVerified so cart/add and other checks work when frontend sends Bearer token)
     const token = jwt.sign(
-      { userId: user._id, email: user.email, username: user.username },
+      { userId: user._id, email: user.email, username: user.username, isEmailVerified: true },
       cfg.jwtSecret,
       { expiresIn: '1h' }
     );
