@@ -21,7 +21,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { getConfig } = require('./config/env');
 const crypto = require('crypto');
-const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const sgMail = require('@sendgrid/mail');
 const cron = require('node-cron');
 const TrainerApplication = require('./TrainerApplication');
 const Order = require('./Order');
@@ -40,50 +40,45 @@ app.set('trust proxy', 1);
 const cfg = getConfig();
 const PORT = process.env.PORT || 8080;
 let dbReady = false;
-// AWS SES client (lazy init per config)
-let sesClient = null;
-function getSesClient() {
-  if (!sesClient) {
-    if (!cfg.aws?.accessKeyId || !cfg.aws?.secretAccessKey || !cfg.aws?.sesRegion || !cfg.aws?.sesFromEmail) {
-      console.warn('AWS SES not fully configured');
-      return null;
-    }
-    sesClient = new SESClient({
-      region: cfg.aws.sesRegion,
-      credentials: {
-        accessKeyId: cfg.aws.accessKeyId,
-        secretAccessKey: cfg.aws.secretAccessKey
-      }
-    });
-  }
-  return sesClient;
+
+// SendGrid (used for verification and password reset emails)
+function isSendGridConfigured() {
+  return !!(cfg.sendgrid?.apiKey && cfg.sendgrid?.fromEmail);
+}
+if (isSendGridConfigured()) {
+  sgMail.setApiKey(cfg.sendgrid.apiKey);
 }
 
 async function sendVerificationEmail(toEmail, token) {
-  const client = getSesClient();
-  if (!client) throw new Error('Email service not configured');
+  if (!isSendGridConfigured()) throw new Error('Email service not configured (set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL)');
   const verifyUrl = `${cfg.frontendBaseUrl}/verify-email?token=${token}`;
-  const params = {
-    Source: cfg.aws.sesFromEmail,
-    Destination: { ToAddresses: [toEmail] },
-    Message: {
-      Subject: { Data: 'Verify your email' },
-      Body: {
-        Text: { Data: `Welcome to Gisul!\n\nPlease verify your email by clicking the link below within 24 hours:\n\n${verifyUrl}\n\nIf you did not sign up, you can ignore this email.` }
-      }
-    }
-  };
-  await client.send(new SendEmailCommand(params));
+  const text = `Welcome to Gisul!\n\nPlease verify your email by clicking the link below within 24 hours:\n\n${verifyUrl}\n\nIf you did not sign up, you can ignore this email.`;
+  await sgMail.send({
+    to: toEmail,
+    from: cfg.sendgrid.fromEmail,
+    subject: 'Verify your email',
+    text,
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.6;color:#222">
+        <h2 style="color:#111;margin-bottom:16px">Welcome to Gisul!</h2>
+        <p>Please verify your email by clicking the button below within 24 hours.</p>
+        <p style="margin:24px 0">
+          <a href="${verifyUrl}" style="background:#0d6efd;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;display:inline-block">Verify Email</a>
+        </p>
+        <p>Or copy this link: <a href="${verifyUrl}">${verifyUrl}</a></p>
+        <p style="font-size:13px;color:#555">If you did not sign up, you can ignore this email.</p>
+      </div>
+    `
+  });
 }
 
 function generateVerificationToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-// Password reset email via AWS SES
+// Password reset email via SendGrid
 async function sendPasswordResetEmail(toEmail, token) {
-  const client = getSesClient();
-  if (!client) throw new Error('Email service not configured');
+  if (!isSendGridConfigured()) throw new Error('Email service not configured (set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL)');
   const resetUrl = `${cfg.frontendBaseUrl}/reset-password?token=${token}`;
   const html = `
     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#222">
@@ -101,18 +96,13 @@ async function sendPasswordResetEmail(toEmail, token) {
   const text = `Password Reset Request - Gisul\n\n` +
     `We received a request to reset your password. Use the link below within 1 hour:\n${resetUrl}\n\n` +
     `If you did not request this, you can ignore this email.`;
-  const params = {
-    Source: cfg.aws.sesFromEmail,
-    Destination: { ToAddresses: [toEmail] },
-    Message: {
-      Subject: { Data: 'Password Reset Request - Gisul' },
-      Body: {
-        Text: { Data: text },
-        Html: { Data: html }
-      }
-    }
-  };
-  await client.send(new SendEmailCommand(params));
+  await sgMail.send({
+    to: toEmail,
+    from: cfg.sendgrid.fromEmail,
+    subject: 'Password Reset Request - Gisul',
+    text,
+    html
+  });
 }
 
 // Fail-fast config validation helper

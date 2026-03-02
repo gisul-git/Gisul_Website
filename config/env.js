@@ -41,6 +41,10 @@ const ENV_CONFIG = {
       sesRegion: process.env.AWS_SES_REGION_DEV || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_DEV || process.env.AWS_SES_FROM_EMAIL
     },
+    sendgrid: {
+      apiKey: process.env.SENDGRID_API_KEY_DEV || process.env.SENDGRID_API_KEY,
+      fromEmail: process.env.SENDGRID_FROM_EMAIL_DEV || process.env.SENDGRID_FROM_EMAIL
+    },
     instagram: {
       accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_DEV || process.env.INSTAGRAM_ACCESS_TOKEN,
       businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
@@ -84,6 +88,10 @@ const ENV_CONFIG = {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_QA || process.env.AWS_SECRET_ACCESS_KEY,
       sesRegion: process.env.AWS_SES_REGION_QA || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_QA || process.env.AWS_SES_FROM_EMAIL
+    },
+    sendgrid: {
+      apiKey: process.env.SENDGRID_API_KEY_QA || process.env.SENDGRID_API_KEY,
+      fromEmail: process.env.SENDGRID_FROM_EMAIL_QA || process.env.SENDGRID_FROM_EMAIL
     },
     instagram: {
       accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_QA || process.env.INSTAGRAM_ACCESS_TOKEN,
@@ -129,6 +137,10 @@ const ENV_CONFIG = {
       sesRegion: process.env.AWS_SES_REGION_UAT || process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL_UAT || process.env.AWS_SES_FROM_EMAIL
     },
+    sendgrid: {
+      apiKey: process.env.SENDGRID_API_KEY_UAT || process.env.SENDGRID_API_KEY,
+      fromEmail: process.env.SENDGRID_FROM_EMAIL_UAT || process.env.SENDGRID_FROM_EMAIL
+    },
     instagram: {
       accessToken: process.env.INSTAGRAM_ACCESS_TOKEN_UAT || process.env.INSTAGRAM_ACCESS_TOKEN,
       businessAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID_UAT || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID
@@ -173,6 +185,10 @@ const ENV_CONFIG = {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
       sesRegion: process.env.AWS_SES_REGION,
       sesFromEmail: process.env.AWS_SES_FROM_EMAIL
+    },
+    sendgrid: {
+      apiKey: process.env.SENDGRID_API_KEY,
+      fromEmail: process.env.SENDGRID_FROM_EMAIL
     },
     instagram: {
       accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
